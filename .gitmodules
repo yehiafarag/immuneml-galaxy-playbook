@@ -1,0 +1,3 @@
+[submodule "galaxy_core_infra"]
+	path = galaxy_core_infra
+	url = https://github.com/yehiamf/ansible_galaxy_playbook.git
