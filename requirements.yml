@@ -1,0 +1,19 @@
+---
+roles:
+  #  Galaxy baseline role used by the ImmuneML orchestrator.
+  - name: galaxy_deployment
+    src: git+ssh://git@github.com/yehiafarag/ansible_galaxy_playbook.git
+    version: galaxy-deployment-role-v1.0.0
+
+  # External roles required by galaxy_deployment.
+  - name: galaxyproject.postgresql
+    version: 1.1.2
+
+  - name: galaxyproject.postgresql_objects
+    version: 1.2.0
+
+  - name: galaxyproject.galaxy
+    version: 0.12.1
+
+  - name: galaxyproject.miniconda
+    version: 0.3.3

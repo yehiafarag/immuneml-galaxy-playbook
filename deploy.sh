@@ -1,0 +1,349 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# ========================================================================
+# ImmuneML Galaxy Deployment Tool
+# ========================================================================
+#
+# This deployment wrapper is based on the Galaxy deployment script.
+#
+# Responsibilities:
+#   - Prepare local Ansible control environment
+#   - Generate inventory from group_vars/galaxyservers.yml
+#   - Install Ansible roles from requirements.yml
+#   - Run immuneml.yml
+#
+# Important:
+#   Galaxy baseline deployment is handled inside immuneml.yml
+#   through the galaxy_deployment role.
+# ========================================================================
+
+OS_NAME="$(uname -s)"
+DEPLOYMENT_MODE="remote"
+
+# ------------------------------------------------------------------------
+# Terminal Colors Setup
+# ------------------------------------------------------------------------
+if [[ -t 1 ]]; then
+  RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+else
+  RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
+fi
+
+step()   { echo -e "${BLUE}[INFO]${NC} $1"; }
+warn()   { echo -e "${YELLOW}[WARN]${NC} $1"; }
+error()  { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+success(){ echo -e "${GREEN}[OK]${NC} $1"; }
+fail()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+
+# ------------------------------------------------------------------------
+# Path Configurations
+# ------------------------------------------------------------------------
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VENV_DIR="$PROJECT_DIR/venv"
+LOCAL_TMP="$PROJECT_DIR/.tmp"
+
+CONFIG_FILE="$PROJECT_DIR/group_vars/galaxyservers.yml"
+INVENTORY_FILE="$PROJECT_DIR/hosts"
+REQUIREMENTS_FILE="$PROJECT_DIR/requirements.yml"
+PLAYBOOK="$PROJECT_DIR/immuneml.yml"
+ROLES_DIR="$PROJECT_DIR/roles"
+
+DEFAULT_REMOTE_ROOT="/srv/galaxy"
+
+GALAXY_HOST_IP=""
+GALAXY_SSH_USER=""
+GALAXY_ROOT=""
+
+# ========================================================================
+# CONFIGURATION LOADER
+# ========================================================================
+load_config() {
+  step "Loading ImmuneML Galaxy configuration file"
+
+  [[ -f "$CONFIG_FILE" ]] || error "Missing target file: group_vars/galaxyservers.yml"
+
+  if ! command -v yq >/dev/null 2>&1; then
+    if [[ -x "$VENV_DIR/bin/yq" ]]; then
+      export PATH="$VENV_DIR/bin:$PATH"
+    else
+      error "yq utility missing. Run option 2 first, or install yq manually."
+    fi
+  fi
+
+  GALAXY_HOST_IP=$(yq -r '.galaxy.host_ip' "$CONFIG_FILE")
+  GALAXY_SSH_USER=$(yq -r '.galaxy.ssh_user' "$CONFIG_FILE")
+  GALAXY_ROOT=$(yq -r '.galaxy_base_dir // .galaxy_root // "'"$DEFAULT_REMOTE_ROOT"'"' "$CONFIG_FILE")
+
+  [[ -z "$GALAXY_HOST_IP" || "$GALAXY_HOST_IP" == "null" ]] && error "Missing 'galaxy.host_ip' entry in group_vars/galaxyservers.yml"
+  [[ -z "$GALAXY_SSH_USER" || "$GALAXY_SSH_USER" == "null" ]] && error "Missing 'galaxy.ssh_user' entry in group_vars/galaxyservers.yml"
+
+  success "Configuration validated and parsed successfully ✅"
+}
+
+# ========================================================================
+# DYNAMIC INVENTORY GENERATOR
+# ========================================================================
+generate_inventory() {
+  step "Generating inventory host mapping file"
+
+  if [[ "$DEPLOYMENT_MODE" == "local" ]]; then
+    cat > "$INVENTORY_FILE" <<EOF
+[galaxyservers]
+localhost ansible_connection=local ansible_python_interpreter=/usr/bin/python3
+
+[dbservers]
+localhost ansible_connection=local
+EOF
+  else
+    cat > "$INVENTORY_FILE" <<EOF
+[galaxyservers]
+galaxy ansible_host=$GALAXY_HOST_IP ansible_user=$GALAXY_SSH_USER ansible_become=true ansible_become_method=sudo ansible_python_interpreter=/usr/bin/python3
+
+[dbservers]
+galaxy
+EOF
+  fi
+
+  success "Hosts inventory updated at: $INVENTORY_FILE ✅"
+}
+
+# ========================================================================
+# CONTROL NODE PREPARATION
+# ========================================================================
+prepare_control_node() {
+  step "Setting up local Python virtual environment execution context"
+
+  mkdir -p "$LOCAL_TMP/ansible_tmp"
+  chmod 777 "$LOCAL_TMP/ansible_tmp"
+  export ANSIBLE_LOCAL_TEMP="$LOCAL_TMP/ansible_tmp"
+
+  rm -rf "$VENV_DIR"
+  python3 -m venv "$VENV_DIR"
+
+  # shellcheck disable=SC1091
+  source "$VENV_DIR/bin/activate"
+
+  pip install --upgrade pip setuptools wheel
+  pip install ansible yq
+
+  success "Control node operational dependencies established ✅"
+}
+
+install_roles() {
+  step "Installing Galaxy deployment and external Ansible role requirements"
+
+  [[ -f "$REQUIREMENTS_FILE" ]] || error "Missing requirements file: $REQUIREMENTS_FILE"
+
+  mkdir -p "$ROLES_DIR"
+
+  # shellcheck disable=SC1091
+  source "$VENV_DIR/bin/activate"
+
+  ansible-galaxy role install \
+    -r "$REQUIREMENTS_FILE" \
+    -p "$ROLES_DIR" \
+    --force
+
+  success "Ansible roles fetched successfully into $ROLES_DIR ✅"
+}
+
+validate_playbook() {
+  load_config
+  generate_inventory
+
+  step "Validating ImmuneML orchestrator playbook syntax"
+
+  [[ -f "$PLAYBOOK" ]] || error "Missing playbook: $PLAYBOOK"
+
+  # shellcheck disable=SC1091
+  source "$VENV_DIR/bin/activate"
+
+  ansible-playbook -i "$INVENTORY_FILE" "$PLAYBOOK" --syntax-check
+
+  success "ImmuneML playbook structural check completed successfully ✅"
+}
+
+# ========================================================================
+# REMOTE INFRASTRUCTURE OPERATIONS
+# ========================================================================
+test_connection() {
+  load_config
+  generate_inventory
+
+  step "Testing connection capabilities to remote system host"
+
+  # shellcheck disable=SC1091
+  source "$VENV_DIR/bin/activate"
+
+  ansible galaxyservers -i "$INVENTORY_FILE" -m ping \
+    || error "Failed to establish a connection with the remote machine over SSH."
+
+  success "Remote SSH authentication successful ✅"
+}
+
+deploy_remote() {
+  load_config
+  generate_inventory
+
+  step "Initiating ImmuneML Galaxy automation play run"
+  step "Galaxy baseline deployment is handled inside immuneml.yml through galaxy_deployment"
+
+  # shellcheck disable=SC1091
+  source "$VENV_DIR/bin/activate"
+
+  ansible-playbook -i "$INVENTORY_FILE" "$PLAYBOOK" --flush-cache
+
+  success "ImmuneML Galaxy playbook run completed successfully ✅"
+}
+
+validate_remote() {
+  load_config
+  generate_inventory
+
+  step "Querying Galaxy API and ImmuneML runtime status"
+
+  # shellcheck disable=SC1091
+  source "$VENV_DIR/bin/activate"
+
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a "
+    set -e
+
+    echo 'Checking Galaxy API endpoint...'
+    curl -sf http://127.0.0.1/api/version
+
+    echo 'Checking ImmuneML CLI...'
+    if command -v immune-ml >/dev/null 2>&1; then
+      immune-ml -h >/dev/null
+    elif [ -x /usr/local/bin/immune-ml ]; then
+      /usr/local/bin/immune-ml -h >/dev/null
+    else
+      echo 'immune-ml command not found'
+      exit 1
+    fi
+  " || error "Remote Galaxy or ImmuneML validation failed."
+
+  success "Galaxy platform and ImmuneML runtime responding normally ✅"
+}
+
+full_remote() {
+  prepare_control_node
+  install_roles
+  validate_playbook
+  test_connection
+  deploy_remote
+  validate_remote
+
+  success "FULL IMMUNEML GALAXY AUTOMATION PIPELINE FINISHED 🚀"
+}
+
+# ========================================================================
+# LOCAL INSTANCE INFRASTRUCTURE — Linux Only
+# ========================================================================
+deploy_local() {
+  DEPLOYMENT_MODE="local"
+
+  [[ "$OS_NAME" == "Linux" ]] || error "Local system installations are only supported on native Linux targets"
+
+  prepare_control_node
+  install_roles
+  load_config
+  generate_inventory
+
+  step "Executing ImmuneML Galaxy automation against localhost"
+
+  # shellcheck disable=SC1091
+  source "$VENV_DIR/bin/activate"
+
+  ansible-playbook -i "$INVENTORY_FILE" "$PLAYBOOK" --flush-cache
+
+  success "Local ImmuneML Galaxy execution completed successfully ✅"
+}
+
+# ========================================================================
+# ENVIRONMENT CLEANUP
+# ========================================================================
+clean_local() {
+  step "Cleaning local execution space assets"
+
+  read -rp "Delete control venv, temporary files, and installed roles? (y/n) [default=n]: " ans
+  ans="${ans:-n}"
+
+  if [[ ! "$ans" =~ ^[Yy]$ ]]; then
+    step "Local deletion operations canceled"
+    return 0
+  fi
+
+  rm -rf "$VENV_DIR" "$LOCAL_TMP" "$ROLES_DIR"
+
+  success "Local dependency footprints cleared successfully ✅"
+}
+
+clean_remote_immuneml() {
+  load_config
+  generate_inventory
+
+  warn "This removes only ImmuneML runtime assets from the remote host."
+  warn "It does NOT remove Galaxy, PostgreSQL, Nginx, or Galaxy datasets."
+
+  read -rp "Proceed with remote ImmuneML cleanup? (y/n): " ans
+  [[ "$ans" =~ ^[Yy]$ ]] || { step "Remote ImmuneML cleanup aborted"; return; }
+
+  # shellcheck disable=SC1091
+  source "$VENV_DIR/bin/activate"
+
+  step "Removing ImmuneML runtime directory and command links"
+
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m file -a "path=/usr/local/bin/immune-ml state=absent" || true
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m file -a "path=/usr/local/bin/immune-ml-quickstart state=absent" || true
+
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a "
+    if [ -d /srv/galaxy/immuneml ]; then
+      rm -rf /srv/galaxy/immuneml
+    fi
+  " || true
+
+  success "Remote ImmuneML runtime cleanup completed ✅"
+}
+
+# ========================================================================
+# INTERACTIVE INTERFACE NAVIGATION MENU
+# ========================================================================
+menu() {
+  echo ""
+  echo "===================================================="
+  echo " ImmuneML Galaxy Deployment System"
+  echo "===================================================="
+  echo "1)  Full automated remote ImmuneML Galaxy deployment"
+  echo "2)  Prepare local context control environment (venv)"
+  echo "3)  Install dependent Ansible role packages"
+  echo "4)  Run remote system ping connectivity analysis"
+  echo "5)  Validate ImmuneML orchestrator playbook syntax"
+  echo "6)  Execute ImmuneML Galaxy deploy target sequence"
+  echo "7)  Run remote Galaxy and ImmuneML diagnostics"
+  echo "8)  Execute deployment routines against localhost (Linux only)"
+  echo "9)  Clean local context development dependencies workspace"
+  echo "10) Remove remote ImmuneML runtime assets only"
+  echo "11) Terminate run engine context"
+  echo "----------------------------------------------------"
+
+  read -rp "Action Selection: " c
+
+  case "$c" in
+    1) full_remote ;;
+    2) prepare_control_node ;;
+    3) install_roles ;;
+    4) test_connection ;;
+    5) validate_playbook ;;
+    6) deploy_remote ;;
+    7) validate_remote ;;
+    8) deploy_local ;;
+    9) clean_local ;;
+    10) clean_remote_immuneml ;;
+    11) exit 0 ;;
+    *) warn "Selected instruction parameters are invalid." ; menu ;;
+  esac
+}
+
+# Launch the execution loop interface
+menu
