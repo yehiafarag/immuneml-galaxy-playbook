@@ -1,0 +1,123 @@
+
+---
+# ========================================================================
+# IMMUNEML GALAXY ORCHESTRATOR
+# ========================================================================
+#
+# This playbook is the main entry point for the ImmuneML Galaxy deployment.
+#
+# Flow:
+#   1. Check whether the Galaxy baseline already exists
+#   2. If Galaxy is missing, run the galaxy_deployment role
+#   3. Install ImmuneML runtime on top of Galaxy
+#
+# The galaxy_deployment role is installed from requirements.yml.
+# ========================================================================
+# ------------------------------------------------------------------------
+# PLAY 1: Check whether Galaxy baseline is deployed and running
+# ------------------------------------------------------------------------
+- name: Check whether Galaxy baseline is deployed and running
+  hosts: galaxyservers
+  become: true
+  gather_facts: false
+
+  vars:
+    galaxy_server_dir: "{{ galaxy_root | default('/srv/galaxy/server') }}"
+    galaxy_config_file: "{{ galaxy_config_dir | default('/srv/galaxy/config') }}/galaxy.yml"
+    galaxy_service_unit: "{{ galaxy_service_name | default('galaxy') }}"
+
+  tasks:
+    - name: Check Galaxy server directory
+      ansible.builtin.stat:
+        path: "{{ galaxy_server_dir }}"
+      register: galaxy_server_dir_status
+
+    - name: Check Galaxy run script
+      ansible.builtin.stat:
+        path: "{{ galaxy_server_dir }}/run.sh"
+      register: galaxy_run_script_status
+
+    - name: Check Galaxy Python package directory
+      ansible.builtin.stat:
+        path: "{{ galaxy_server_dir }}/lib/galaxy"
+      register: galaxy_python_package_status
+
+    - name: Check Galaxy config file
+      ansible.builtin.stat:
+        path: "{{ galaxy_config_file }}"
+      register: galaxy_config_file_status
+
+    - name: Check Galaxy systemd unit exists
+      ansible.builtin.command:
+        cmd: "systemctl list-unit-files {{ galaxy_service_unit }}.service"
+      register: galaxy_service_unit_status
+      changed_when: false
+      failed_when: false
+
+    - name: Check Galaxy service active state
+      ansible.builtin.command:
+        cmd: "systemctl is-active {{ galaxy_service_unit }}"
+      register: galaxy_service_active_status
+      changed_when: false
+      failed_when: false
+
+    - name: Check Galaxy API endpoint
+      ansible.builtin.command:
+        cmd: "curl -sf http://127.0.0.1/api/version"
+      register: galaxy_api_status
+      changed_when: false
+      failed_when: false
+
+    - name: Set Galaxy deployment and runtime status
+      ansible.builtin.set_fact:
+        galaxy_baseline_deployed: >-
+          {{
+            galaxy_server_dir_status.stat.exists
+            and galaxy_config_file_status.stat.exists
+            and galaxy_service_unit_status.rc == 0
+            and (
+              galaxy_run_script_status.stat.exists
+              or galaxy_python_package_status.stat.exists
+            )
+          }}
+        galaxy_service_running: >-
+          {{
+            galaxy_service_active_status.rc == 0
+            and galaxy_service_active_status.stdout == "active"
+          }}
+        galaxy_api_responding: >-
+          {{
+            galaxy_api_status.rc == 0
+          }}
+
+    - name: Report Galaxy baseline status
+      ansible.builtin.debug:
+        msg:
+          - "Galaxy baseline deployed = {{ galaxy_baseline_deployed }}"
+          - "Galaxy service running = {{ galaxy_service_running }}"
+          - "Galaxy API responding = {{ galaxy_api_responding }}"
+          - "server_dir={{ galaxy_server_dir_status.stat.exists }}"
+          - "run_script={{ galaxy_run_script_status.stat.exists }}"
+          - "python_package={{ galaxy_python_package_status.stat.exists }}"
+          - "config_file={{ galaxy_config_file_status.stat.exists }}"
+          - "service_unit_rc={{ galaxy_service_unit_status.rc }}"
+          - "service_active={{ galaxy_service_active_status.stdout | default('unknown') }}"
+          - "api_rc={{ galaxy_api_status.rc }}"
+
+# ------------------------------------------------------------------------
+# PLAY 2: Redeploy Galaxy baseline if unhealthy
+# ------------------------------------------------------------------------
+- name: Redeploy Galaxy baseline when unhealthy
+  hosts: galaxyservers
+  become: true
+
+  tasks:
+    - name: Run galaxy_deployment role when Galaxy is missing, inactive, or unhealthy
+      ansible.builtin.include_role:
+        name: galaxy_deployment
+      when: galaxy_needs_redeploy | default(true) | bool
+
+    - name: Skip Galaxy deployment because baseline is healthy
+      ansible.builtin.debug:
+        msg: "Galaxy baseline is healthy. Skipping galaxy_deployment role."
+      when: not (galaxy_needs_redeploy | default(true) | bool)
