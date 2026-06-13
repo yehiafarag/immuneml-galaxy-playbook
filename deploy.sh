@@ -16,6 +16,10 @@ set -Eeuo pipefail
 # Important:
 #   Galaxy baseline deployment is handled inside immuneml.yml
 #   through the galaxy_deployment role.
+#
+# ImmuneML installation:
+#   ImmuneML is installed from PyPI only.
+#   Version and upgrade behavior are controlled in group_vars/galaxyservers.yml.
 # ========================================================================
 
 OS_NAME="$(uname -s)"
@@ -130,6 +134,9 @@ prepare_control_node() {
   success "Control node operational dependencies established ✅"
 }
 
+# ========================================================================
+# ROLE INSTALLATION
+# ========================================================================
 install_roles() {
   step "Installing Galaxy deployment and external Ansible role requirements"
 
@@ -148,6 +155,9 @@ install_roles() {
   success "Ansible roles fetched successfully into $ROLES_DIR ✅"
 }
 
+# ========================================================================
+# PLAYBOOK VALIDATION
+# ========================================================================
 validate_playbook() {
   load_config
   generate_inventory
@@ -188,11 +198,15 @@ deploy_remote() {
 
   step "Initiating ImmuneML Galaxy automation play run"
   step "Galaxy baseline deployment is handled inside immuneml.yml through galaxy_deployment"
+  step "ImmuneML installation is handled from PyPI using group_vars/galaxyservers.yml"
 
   # shellcheck disable=SC1091
   source "$VENV_DIR/bin/activate"
 
-  ansible-playbook -i "$INVENTORY_FILE" "$PLAYBOOK" --flush-cache
+  ansible-playbook \
+    -i "$INVENTORY_FILE" \
+    "$PLAYBOOK" \
+    --flush-cache
 
   success "ImmuneML Galaxy playbook run completed successfully ✅"
 }
@@ -201,29 +215,24 @@ validate_remote() {
   load_config
   generate_inventory
 
-  step "Querying Galaxy API and ImmuneML runtime status"
+  step "Querying Galaxy API status"
 
   # shellcheck disable=SC1091
   source "$VENV_DIR/bin/activate"
 
-  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a "
-    set -e
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m command -a \
+    "curl -sf http://127.0.0.1/api/version" \
+    || error "Galaxy API endpoint is not responding."
 
-    echo 'Checking Galaxy API endpoint...'
-    curl -sf http://127.0.0.1/api/version
+  success "Galaxy API endpoint is responding ✅"
 
-    echo 'Checking ImmuneML CLI...'
-    if command -v immune-ml >/dev/null 2>&1; then
-      immune-ml -h >/dev/null
-    elif [ -x /usr/local/bin/immune-ml ]; then
-      /usr/local/bin/immune-ml -h >/dev/null
-    else
-      echo 'immune-ml command not found'
-      exit 1
-    fi
-  " || error "Remote Galaxy or ImmuneML validation failed."
+  step "Querying ImmuneML CLI status"
 
-  success "Galaxy platform and ImmuneML runtime responding normally ✅"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a \
+    'if [ -x /usr/local/bin/immune-ml ]; then /usr/local/bin/immune-ml -h; else immune-ml -h; fi' \
+    || error "ImmuneML CLI validation failed."
+
+  success "ImmuneML CLI is available and working ✅"
 }
 
 full_remote() {
@@ -319,7 +328,7 @@ menu() {
   echo "3)  Install dependent Ansible role packages"
   echo "4)  Run remote system ping connectivity analysis"
   echo "5)  Validate ImmuneML orchestrator playbook syntax"
-  echo "6)  Execute ImmuneML Galaxy deploy target sequence"
+  echo "6)  Run ImmuneML playbook only"
   echo "7)  Run remote Galaxy and ImmuneML diagnostics"
   echo "8)  Execute deployment routines against localhost (Linux only)"
   echo "9)  Clean local context development dependencies workspace"

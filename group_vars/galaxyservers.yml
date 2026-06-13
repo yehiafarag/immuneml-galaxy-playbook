@@ -1,10 +1,13 @@
+# =====================================================================
+# ImmuneML Galaxy deployment configuration
+# =====================================================================
+
 # ---------------------------------------------------------------------
 # Target VM
 # ---------------------------------------------------------------------
 galaxy:
-  host_ip: "<VM_IP_OR_HOSTNAME>"
-  ssh_user: "<SSH_USER>"
-
+  host_ip: "galaxy_immune_nrec"
+  ssh_user: "ubuntu"
 
 # ---------------------------------------------------------------------
 # Galaxy admin
@@ -15,3 +18,30 @@ galaxy_admin_email: "admin@example.com"
 # Database secret
 # ---------------------------------------------------------------------
 galaxy_database_password: "CHANGE_ME_STRONG_PASSWORD"
+
+# =====================================================================
+# ImmuneML runtime defaults
+# =====================================================================
+
+immuneml_install_dir: /srv/galaxy/immuneml
+immuneml_venv: /srv/galaxy/immuneml/venv
+immuneml_reference_dir: /srv/galaxy/mutable/data/immuneml_references
+immuneml_run_quickstart: false
+
+# ---------------------------------------------------------------------
+# Default values used by deploy.sh if user presses Enter
+# ---------------------------------------------------------------------
+immuneml_default_install_method: "pypi"
+
+immuneml_default_version: "3.0.27"
+immuneml_default_git_repo: "https://github.com/uio-bmi/immuneML.git"
+immuneml_default_git_branch: "master"
+
+# Tool Shed defaults
+galaxy_url: "http://127.0.0.1"
+immuneml_toolshed_url: "https://toolshed.g2.bx.psu.edu"
+
+# Fill this only when using Tool Shed mode.
+galaxy_admin_api_key: ""
+
+immuneml_toolshed_repositories: []
