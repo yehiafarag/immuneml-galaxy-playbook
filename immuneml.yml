@@ -130,6 +130,13 @@
     galaxy_runtime_group: "{{ galaxy_group | default(galaxy_user_name | default('galaxy')) }}"
 
   tasks:
+    - name: Ensure Ansible remote tmp directory exists with safe permissions
+      ansible.builtin.file:
+        path: /tmp/.ansible-root
+        state: directory
+        owner: root
+        group: root
+        mode: "1777"
     - name: Ensure Galaxy base directory exists
       ansible.builtin.file:
         path: "{{ galaxy_base_dir_resolved }}"
@@ -229,189 +236,424 @@
         name: nginx
         state: restarted
       failed_when: false
-#
-## ------------------------------------------------------------------------
-## PLAY 3: Install/configure ImmuneML overlay from PyPI
-## ------------------------------------------------------------------------
-#- name: Install ImmuneML runtime on Galaxy from PyPI
-#  hosts: galaxyservers
-#  become: true
-#
-#  vars:
-#    # --------------------------------------------------------------------
-#    # ImmuneML runtime paths
-#    # --------------------------------------------------------------------
-#    immuneml_install_dir_resolved: "{{ immuneml_install_dir | default('/srv/galaxy/immuneml') }}"
-#    immuneml_venv_resolved: "{{ immuneml_venv | default('/srv/galaxy/immuneml/venv') }}"
-#    immuneml_reference_dir_resolved: "{{ immuneml_reference_dir | default('/srv/galaxy/var/data/immuneml_references') }}"
-#
-#    # --------------------------------------------------------------------
-#    # PyPI version handling
-#    # --------------------------------------------------------------------
-#    immuneml_version_resolved: "{{ immuneml_version | default('3.0.27') }}"
-#    immuneml_upgrade_to_latest_resolved: "{{ immuneml_upgrade_to_latest | default(true) | bool }}"
-#    immuneml_reinstall_if_present_resolved: "{{ immuneml_reinstall_if_present | default(true) | bool }}"
-#    immuneml_run_quickstart_resolved: "{{ immuneml_run_quickstart | default(false) | bool }}"
-#
-#    # --------------------------------------------------------------------
-#    # Runtime user
-#    # --------------------------------------------------------------------
-#    galaxy_runtime_user: "{{ galaxy_user | default(galaxy_user_name | default('galaxy')) }}"
-#    galaxy_runtime_group: "{{ galaxy_group | default(galaxy_user_name | default('galaxy')) }}"
-#
-#  tasks:
-#    - name: Announce ImmuneML integration phase
-#      ansible.builtin.debug:
-#        msg:
-#          - "Galaxy baseline is ready. Starting ImmuneML runtime integration..."
-#          - "ImmuneML source: PyPI"
-#          - "Pinned version: {{ immuneml_version_resolved }}"
-#          - "Upgrade to latest: {{ immuneml_upgrade_to_latest_resolved }}"
-#          - "Reinstall if venv exists: {{ immuneml_reinstall_if_present_resolved }}"
-#
-#    - name: Ensure ImmuneML system dependencies are installed
-#      ansible.builtin.apt:
-#        name:
-#          - python3
-#          - python3-dev
-#          - python3-venv
-#          - python3-pip
-#          - build-essential
-#          - gcc
-#          - g++
-#          - gfortran
-#          - git
-#          - curl
-#          - libblas-dev
-#          - liblapack-dev
-#          - libhdf5-dev
-#          - libgfortran5
-#        state: present
-#        update_cache: true
-#
-#    - name: Create ImmuneML install directory
-#      ansible.builtin.file:
-#        path: "{{ immuneml_install_dir_resolved }}"
-#        state: directory
-#        owner: "{{ galaxy_runtime_user }}"
-#        group: "{{ galaxy_runtime_group }}"
-#        mode: "0755"
-#
-#    - name: Create ImmuneML reference directory
-#      ansible.builtin.file:
-#        path: "{{ immuneml_reference_dir_resolved }}"
-#        state: directory
-#        owner: "{{ galaxy_runtime_user }}"
-#        group: "{{ galaxy_runtime_group }}"
-#        mode: "0755"
-#
-#    - name: Check whether ImmuneML virtual environment exists
-#      ansible.builtin.stat:
-#        path: "{{ immuneml_venv_resolved }}/bin/python"
-#      register: immuneml_venv_python_status
-#
-#    - name: Remove existing ImmuneML virtual environment before reinstall
-#      ansible.builtin.file:
-#        path: "{{ immuneml_venv_resolved }}"
-#        state: absent
-#      when:
-#        - immuneml_reinstall_if_present_resolved
-#        - immuneml_venv_python_status.stat.exists
-#
-#    - name: Create ImmuneML Python virtual environment
-#      ansible.builtin.command:
-#        cmd: "python3 -m venv {{ immuneml_venv_resolved }}"
-#        creates: "{{ immuneml_venv_resolved }}/bin/activate"
-#      become_user: "{{ galaxy_runtime_user }}"
-#
-#    - name: Upgrade pip, wheel, and modern setuptools in ImmuneML virtual environment
-#      ansible.builtin.pip:
-#        name:
-#          - pip
-#          - wheel
-#          - "setuptools>=75.3.0"
-#        state: latest
-#        virtualenv: "{{ immuneml_venv_resolved }}"
-#      become_user: "{{ galaxy_runtime_user }}"
-#
-#    - name: Install immuneML runtime dependency stack from PyPI
-#      ansible.builtin.pip:
-#        name:
-#          - "numpy==1.26.4"
-#          - "scipy==1.12.0"
-#          - "pandas>=2.1.0"
-#          - "PyYAML>=5.3"
-#          - "scikit-learn"
-#          - "matplotlib"
-#          - "editdistance"
-#          - "regex"
-#          - "tzlocal"
-#          - "airr>=1.5.1"
-#          - "pystache"
-#          - "dill>=0.3"
-#          - "plotly"
-#          - "matplotlib-venn"
-#          - "bionumpy>=1.0.12"
-#          - "umap-learn"
-#          - "olga>=1.2.4"
-#          - "psutil"
-#          - "kaleido"
-#          - "logomaker"
-#          - "python-glmnet==2.6.1"
-#        virtualenv: "{{ immuneml_venv_resolved }}"
-#        extra_args: "--upgrade"
-#      become_user: "{{ galaxy_runtime_user }}"
-#
-#    - name: Install latest ImmuneML package from PyPI without dependency resolver
-#      ansible.builtin.pip:
-#        name: "immuneML"
-#        state: latest
-#        virtualenv: "{{ immuneml_venv_resolved }}"
-#        extra_args: "--upgrade --no-deps"
-#      become_user: "{{ galaxy_runtime_user }}"
-#      when: immuneml_upgrade_to_latest_resolved
-#
-#    - name: Install pinned ImmuneML package from PyPI without dependency resolver
-#      ansible.builtin.pip:
-#        name: "immuneML=={{ immuneml_version_resolved }}"
-#        virtualenv: "{{ immuneml_venv_resolved }}"
-#        extra_args: "--upgrade --no-deps"
-#      become_user: "{{ galaxy_runtime_user }}"
-#      when: not immuneml_upgrade_to_latest_resolved
-#
-#    - name: Create immune-ml command symlink
-#      ansible.builtin.file:
-#        src: "{{ immuneml_venv_resolved }}/bin/immune-ml"
-#        dest: /usr/local/bin/immune-ml
-#        state: link
-#        force: true
-#
-#    - name: Create immune-ml-quickstart command symlink
-#      ansible.builtin.file:
-#        src: "{{ immuneml_venv_resolved }}/bin/immune-ml-quickstart"
-#        dest: /usr/local/bin/immune-ml-quickstart
-#        state: link
-#        force: true
-#
-#    - name: Validate ImmuneML CLI
-#      ansible.builtin.command:
-#        cmd: "{{ immuneml_venv_resolved }}/bin/immune-ml -h"
-#      changed_when: false
-#
-#    - name: Check installed ImmuneML package version
-#      ansible.builtin.command:
-#        cmd: "{{ immuneml_venv_resolved }}/bin/python -m pip show immuneML"
-#      register: immuneml_installed_package_info
-#      changed_when: false
-#
-#    - name: Report installed ImmuneML package information
-#      ansible.builtin.debug:
-#        msg: "{{ immuneml_installed_package_info.stdout_lines }}"
-#
-#    - name: Optionally run ImmuneML quickstart
-#      ansible.builtin.command:
-#        cmd: "{{ immuneml_venv_resolved }}/bin/immune-ml-quickstart {{ immuneml_install_dir_resolved }}/quickstart_results"
-#      become_user: "{{ galaxy_runtime_user }}"
-#      args:
-#        creates: "{{ immuneml_install_dir_resolved }}/quickstart_results"
-#      when: immuneml_run_quickstart_resolved
+
+# ------------------------------------------------------------------------
+# PLAY 3: Install/configure ImmuneML overlay from PyPI
+# ------------------------------------------------------------------------
+- name: Install ImmuneML runtime on Galaxy from PyPI
+  hosts: galaxyservers
+  become: true
+
+  vars:
+    # --------------------------------------------------------------------
+    # ImmuneML runtime paths
+    # --------------------------------------------------------------------
+    immuneml_install_dir_resolved: "{{ immuneml_install_dir | default('/srv/galaxy/immuneml') }}"
+    immuneml_venv_resolved: "{{ immuneml_venv | default('/srv/galaxy/immuneml/venv') }}"
+    immuneml_reference_dir_resolved: "{{ immuneml_reference_dir | default('/srv/galaxy/var/data/immuneml_references') }}"
+
+    # --------------------------------------------------------------------
+    # PyPI version handling
+    # --------------------------------------------------------------------
+    immuneml_version_resolved: "{{ immuneml_version | default('3.0.27') }}"
+    immuneml_upgrade_to_latest_resolved: "{{ immuneml_upgrade_to_latest | default(true) | bool }}"
+    immuneml_reinstall_if_present_resolved: "{{ immuneml_reinstall_if_present | default(true) | bool }}"
+    immuneml_run_quickstart_resolved: "{{ immuneml_run_quickstart | default(false) | bool }}"
+
+    # --------------------------------------------------------------------
+    # Runtime user
+    # --------------------------------------------------------------------
+    galaxy_runtime_user: "{{ galaxy_user | default(galaxy_user_name | default('galaxy')) }}"
+    galaxy_runtime_group: "{{ galaxy_group | default(galaxy_user_name | default('galaxy')) }}"
+
+  tasks:
+    - name: Announce ImmuneML integration phase
+      ansible.builtin.debug:
+        msg:
+          - "Galaxy baseline is ready. Starting ImmuneML runtime integration..."
+          - "ImmuneML source: PyPI"
+          - "Pinned version: {{ immuneml_version_resolved }}"
+          - "Upgrade to latest: {{ immuneml_upgrade_to_latest_resolved }}"
+          - "Reinstall if venv exists: {{ immuneml_reinstall_if_present_resolved }}"
+
+    - name: Ensure ImmuneML system dependencies are installed
+      ansible.builtin.apt:
+        name:
+          - python3
+          - python3-dev
+          - python3-venv
+          - python3-pip
+          - build-essential
+          - gcc
+          - g++
+          - gfortran
+          - git
+          - curl
+          - libblas-dev
+          - liblapack-dev
+          - libhdf5-dev
+          - libgfortran5
+        state: present
+        update_cache: true
+
+    - name: Create ImmuneML install directory
+      ansible.builtin.file:
+        path: "{{ immuneml_install_dir_resolved }}"
+        state: directory
+        owner: "{{ galaxy_runtime_user }}"
+        group: "{{ galaxy_runtime_group }}"
+        mode: "0755"
+
+    - name: Create ImmuneML reference directory
+      ansible.builtin.file:
+        path: "{{ immuneml_reference_dir_resolved }}"
+        state: directory
+        owner: "{{ galaxy_runtime_user }}"
+        group: "{{ galaxy_runtime_group }}"
+        mode: "0755"
+
+    - name: Check whether ImmuneML virtual environment exists
+      ansible.builtin.stat:
+        path: "{{ immuneml_venv_resolved }}/bin/python"
+      register: immuneml_venv_python_status
+
+    - name: Remove existing ImmuneML virtual environment before reinstall
+      ansible.builtin.file:
+        path: "{{ immuneml_venv_resolved }}"
+        state: absent
+      when:
+        - immuneml_reinstall_if_present_resolved
+        - immuneml_venv_python_status.stat.exists
+
+    - name: Create ImmuneML Python virtual environment
+      ansible.builtin.command:
+        cmd: "python3 -m venv {{ immuneml_venv_resolved }}"
+        creates: "{{ immuneml_venv_resolved }}/bin/activate"
+      become_user: "{{ galaxy_runtime_user }}"
+
+    - name: Upgrade pip, wheel, and modern setuptools in ImmuneML virtual environment
+      ansible.builtin.pip:
+        name:
+          - pip
+          - wheel
+          - "setuptools>=75.3.0"
+        state: latest
+        virtualenv: "{{ immuneml_venv_resolved }}"
+      become_user: "{{ galaxy_runtime_user }}"
+
+    - name: Install immuneML runtime dependency stack from PyPI
+      ansible.builtin.pip:
+        name:
+          - "numpy==1.26.4"
+          - "scipy==1.12.0"
+          - "pandas>=2.1.0"
+          - "PyYAML>=5.3"
+          - "scikit-learn"
+          - "matplotlib"
+          - "editdistance"
+          - "regex"
+          - "tzlocal"
+          - "airr>=1.5.1"
+          - "pystache"
+          - "dill>=0.3"
+          - "plotly"
+          - "matplotlib-venn"
+          - "bionumpy>=1.0.12"
+          - "umap-learn"
+          - "olga>=1.2.4"
+          - "psutil"
+          - "kaleido"
+          - "logomaker"
+          - "python-glmnet==2.6.1"
+        virtualenv: "{{ immuneml_venv_resolved }}"
+        extra_args: "--upgrade"
+      become_user: "{{ galaxy_runtime_user }}"
+
+    - name: Install latest ImmuneML package from PyPI without dependency resolver
+      ansible.builtin.pip:
+        name: "immuneML"
+        state: latest
+        virtualenv: "{{ immuneml_venv_resolved }}"
+        extra_args: "--upgrade --no-deps"
+      become_user: "{{ galaxy_runtime_user }}"
+      when: immuneml_upgrade_to_latest_resolved
+
+    - name: Install pinned ImmuneML package from PyPI without dependency resolver
+      ansible.builtin.pip:
+        name: "immuneML=={{ immuneml_version_resolved }}"
+        virtualenv: "{{ immuneml_venv_resolved }}"
+        extra_args: "--upgrade --no-deps"
+      become_user: "{{ galaxy_runtime_user }}"
+      when: not immuneml_upgrade_to_latest_resolved
+
+    - name: Create immune-ml command symlink
+      ansible.builtin.file:
+        src: "{{ immuneml_venv_resolved }}/bin/immune-ml"
+        dest: /usr/local/bin/immune-ml
+        state: link
+        force: true
+
+    - name: Create immune-ml-quickstart command symlink
+      ansible.builtin.file:
+        src: "{{ immuneml_venv_resolved }}/bin/immune-ml-quickstart"
+        dest: /usr/local/bin/immune-ml-quickstart
+        state: link
+        force: true
+
+    - name: Validate ImmuneML CLI
+      ansible.builtin.command:
+        cmd: "{{ immuneml_venv_resolved }}/bin/immune-ml -h"
+      changed_when: false
+
+    - name: Check installed ImmuneML package version
+      ansible.builtin.command:
+        cmd: "{{ immuneml_venv_resolved }}/bin/python -m pip show immuneML"
+      register: immuneml_installed_package_info
+      changed_when: false
+
+    - name: Report installed ImmuneML package information
+      ansible.builtin.debug:
+        msg: "{{ immuneml_installed_package_info.stdout_lines }}"
+
+    - name: Optionally run ImmuneML quickstart
+      ansible.builtin.command:
+        cmd: "{{ immuneml_venv_resolved }}/bin/immune-ml-quickstart {{ immuneml_install_dir_resolved }}/quickstart_results"
+      become_user: "{{ galaxy_runtime_user }}"
+      args:
+        creates: "{{ immuneml_install_dir_resolved }}/quickstart_results"
+      when: immuneml_run_quickstart_resolved
+# ------------------------------------------------------------------------
+# PLAY 4: Register official ImmuneML Galaxy tools
+# ------------------------------------------------------------------------
+- name: Register official ImmuneML Galaxy tools
+  hosts: galaxyservers
+  become: true
+
+  vars:
+    # --------------------------------------------------------------------
+    # Galaxy paths
+    # --------------------------------------------------------------------
+    galaxy_tool_dir_resolved: "{{ galaxy_tool_dir | default('/srv/galaxy/server/tools') }}"
+    galaxy_config_dir_resolved: "{{ galaxy_config_dir | default('/srv/galaxy/config') }}"
+    galaxy_mutable_config_dir_resolved: "{{ galaxy_mutable_config_dir | default('/srv/galaxy/mutable/config') }}"
+    galaxy_service_unit: "{{ galaxy_service_name | default('galaxy') }}"
+
+    galaxy_tool_conf: "{{ galaxy_config_dir_resolved }}/tool_conf.xml"
+    galaxy_config_file: "{{ galaxy_config_dir_resolved }}/galaxy.yml"
+    galaxy_datatypes_conf: "{{ galaxy_config_dir_resolved }}/datatypes_conf.xml"
+
+    # --------------------------------------------------------------------
+    # Official immuneML Galaxy wrapper source
+    # --------------------------------------------------------------------
+    immuneml_tools_repo_resolved: "{{ immuneml_tools_repo_url | default('https://github.com/uio-bmi/immuneml_tools.git') }}"
+    immuneml_tools_version_resolved: "{{ immuneml_tools_version | default('main') }}"
+    immuneml_tools_source_dir_resolved: "{{ immuneml_tools_source_dir | default('/srv/galaxy/immuneml_tools_source') }}"
+    immuneml_tools_force_refresh_resolved: "{{ immuneml_tools_force_refresh | default(true) | bool }}"
+
+    immuneml_tool_dir: "{{ galaxy_tool_dir_resolved }}/immuneml"
+
+    # --------------------------------------------------------------------
+    # Runtime user
+    # --------------------------------------------------------------------
+    galaxy_runtime_user: "{{ galaxy_user | default(galaxy_user_name | default('galaxy')) }}"
+    galaxy_runtime_group: "{{ galaxy_group | default(galaxy_user_name | default('galaxy')) }}"
+
+  tasks:
+    - name: Announce ImmuneML Galaxy tool registration
+      ansible.builtin.debug:
+        msg:
+          - "Registering official immuneML Galaxy tools."
+          - "Tool source repo: {{ immuneml_tools_repo_resolved }}"
+          - "Tool source version: {{ immuneml_tools_version_resolved }}"
+          - "Tool source directory: {{ immuneml_tools_source_dir_resolved }}"
+          - "Galaxy tool directory: {{ immuneml_tool_dir }}"
+          - "Galaxy tool_conf.xml: {{ galaxy_tool_conf }}"
+
+    - name: Ensure git is installed for fetching immuneML Galaxy tools
+      ansible.builtin.apt:
+        name:
+          - git
+        state: present
+        update_cache: true
+
+    - name: Ensure immuneML Galaxy tools source parent directory exists
+      ansible.builtin.file:
+        path: "{{ immuneml_tools_source_dir_resolved | dirname }}"
+        state: directory
+        owner: "{{ galaxy_runtime_user }}"
+        group: "{{ galaxy_runtime_group }}"
+        mode: "0755"
+
+    - name: Remove existing immuneML Galaxy tools source checkout before refresh
+      ansible.builtin.file:
+        path: "{{ immuneml_tools_source_dir_resolved }}"
+        state: absent
+      when: immuneml_tools_force_refresh_resolved
+
+    - name: Clone official immuneML Galaxy tools repository
+      ansible.builtin.git:
+        repo: "{{ immuneml_tools_repo_resolved }}"
+        dest: "{{ immuneml_tools_source_dir_resolved }}"
+        version: "{{ immuneml_tools_version_resolved }}"
+        force: true
+        update: true
+      become_user: "{{ galaxy_runtime_user }}"
+
+    - name: Remove old immuneML Galaxy tool directory before installing official wrappers
+      ansible.builtin.file:
+        path: "{{ immuneml_tool_dir }}"
+        state: absent
+
+    - name: Ensure Galaxy immuneML tool directory exists
+      ansible.builtin.file:
+        path: "{{ immuneml_tool_dir }}"
+        state: directory
+        owner: "{{ galaxy_runtime_user }}"
+        group: "{{ galaxy_runtime_group }}"
+        mode: "0755"
+
+    - name: Copy official immuneML Galaxy tools into Galaxy tools directory
+      ansible.builtin.copy:
+        src: "{{ immuneml_tools_source_dir_resolved }}/"
+        dest: "{{ immuneml_tool_dir }}/"
+        remote_src: true
+        owner: "{{ galaxy_runtime_user }}"
+        group: "{{ galaxy_runtime_group }}"
+        mode: preserve
+
+    - name: Find immuneML Galaxy XML tool wrappers
+      ansible.builtin.find:
+        paths: "{{ immuneml_tool_dir }}"
+        patterns: "*.xml"
+        file_type: file
+      register: immuneml_tool_xml_find
+
+    - name: Build immuneML tool wrapper list
+      ansible.builtin.set_fact:
+        immuneml_tool_xml_files: >-
+          {{
+            immuneml_tool_xml_find.files
+            | map(attribute='path')
+            | map('basename')
+            | reject('equalto', 'prod_macros.xml')
+            | reject('equalto', 'macros.xml')
+            | reject('equalto', 'datatypes_conf.xml')
+            | list
+            | sort
+          }}
+
+    - name: Report immuneML Galaxy tool wrappers found
+      ansible.builtin.debug:
+        msg:
+          - "Found immuneML Galaxy wrappers:"
+          - "{{ immuneml_tool_xml_files }}"
+
+    - name: Fail if no immuneML Galaxy XML wrappers were found
+      ansible.builtin.fail:
+        msg: "No immuneML Galaxy XML wrappers were found in {{ immuneml_tool_dir }}"
+      when: immuneml_tool_xml_files | length == 0
+
+    - name: Check Galaxy tool_conf.xml
+      ansible.builtin.stat:
+        path: "{{ galaxy_tool_conf }}"
+      register: galaxy_tool_conf_status
+
+    - name: Create minimal Galaxy tool_conf.xml if missing
+      ansible.builtin.copy:
+        dest: "{{ galaxy_tool_conf }}"
+        owner: "{{ galaxy_runtime_user }}"
+        group: "{{ galaxy_runtime_group }}"
+        mode: "0644"
+        content: |
+          <?xml version="1.0"?>
+          <toolbox monitor="true">
+          </toolbox>
+      when: not galaxy_tool_conf_status.stat.exists
+
+    - name: Register official immuneML tools in Galaxy toolbox
+      ansible.builtin.blockinfile:
+        path: "{{ galaxy_tool_conf }}"
+        marker: "<!-- {mark} immuneML tools managed by Ansible -->"
+        insertbefore: "</toolbox>"
+        block: |
+          <section id="immuneml" name="immuneML">
+          {% for tool_xml in immuneml_tool_xml_files %}
+              <tool file="immuneml/{{ tool_xml }}" />
+          {% endfor %}
+          </section>
+
+    - name: Ensure Galaxy uses managed tool_conf.xml
+      ansible.builtin.lineinfile:
+        path: "{{ galaxy_config_file }}"
+        regexp: '^\s*tool_config_file:.*$'
+        line: "    tool_config_file: {{ galaxy_tool_conf }}"
+        insertafter: '^galaxy:\s*$'
+        backup: true
+
+    - name: Check Galaxy datatypes_conf.xml
+      ansible.builtin.stat:
+        path: "{{ galaxy_datatypes_conf }}"
+      register: galaxy_datatypes_conf_status
+
+    - name: Create minimal Galaxy datatypes_conf.xml if missing
+      ansible.builtin.copy:
+        dest: "{{ galaxy_datatypes_conf }}"
+        owner: "{{ galaxy_runtime_user }}"
+        group: "{{ galaxy_runtime_group }}"
+        mode: "0644"
+        content: |
+          <?xml version="1.0"?>
+          <datatypes>
+              <registration>
+              </registration>
+          </datatypes>
+      when: not galaxy_datatypes_conf_status.stat.exists
+
+    - name: Register immuneML receptors datatype
+      ansible.builtin.blockinfile:
+        path: "{{ galaxy_datatypes_conf }}"
+        marker: "<!-- {mark} immuneML datatypes managed by Ansible -->"
+        insertbefore: "</registration>"
+        block: |
+          <datatype extension="immuneml_receptors" type="galaxy.datatypes.text:Html" subclass="True"/>
+
+    - name: Ensure Galaxy uses managed datatypes_conf.xml
+      ansible.builtin.lineinfile:
+        path: "{{ galaxy_config_file }}"
+        regexp: '^\s*datatypes_config_file:.*$'
+        line: "    datatypes_config_file: {{ galaxy_datatypes_conf }}"
+        insertafter: '^galaxy:\s*$'
+        backup: true
+
+    - name: Remove cached integrated tool panel
+      ansible.builtin.file:
+        path: "{{ galaxy_mutable_config_dir_resolved }}/integrated_tool_panel.xml"
+        state: absent
+      failed_when: false
+
+    - name: Restart Galaxy after registering immuneML tools
+      ansible.builtin.systemd:
+        name: "{{ galaxy_service_unit }}"
+        state: restarted
+        daemon_reload: true
+
+    - name: Wait 300 seconds for Galaxy to stabilise after restart
+      ansible.builtin.pause:
+        seconds: 300
+
+    - name: Confirm Galaxy API responds after stabilisation wait
+      ansible.builtin.uri:
+        url: "http://127.0.0.1/api/version"
+        method: GET
+        status_code: 200
+      register: galaxy_api_after_restart
+      retries: 30
+      delay: 10
+      until: galaxy_api_after_restart.status == 200
+
+    - name: Report ImmuneML Galaxy tool registration complete
+      ansible.builtin.debug:
+        msg:
+          - "ImmuneML Galaxy tools registered."
+          - "Refresh Galaxy UI and search for immuneML."
+          - "Registered wrappers: {{ immuneml_tool_xml_files }}"
