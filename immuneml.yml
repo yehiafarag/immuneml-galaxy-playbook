@@ -1,4 +1,3 @@
-
 ---
 # ========================================================================
 # IMMUNEML GALAXY ORCHESTRATOR
@@ -13,6 +12,7 @@
 #
 # The galaxy_deployment role is installed from requirements.yml.
 # ========================================================================
+
 # ------------------------------------------------------------------------
 # PLAY 1: Check whether Galaxy baseline is deployed and running
 # ------------------------------------------------------------------------
@@ -69,7 +69,6 @@
       failed_when: false
 
     - name: Set Galaxy deployment and runtime status
-
       ansible.builtin.set_fact:
         galaxy_baseline_deployed: >-
           {{
@@ -88,20 +87,19 @@
           }}
         galaxy_api_responding: >-
           {{
-          galaxy_api_status.rc == 0
+            galaxy_api_status.rc == 0
           }}
 
     - name: Set Galaxy redeploy decision
       ansible.builtin.set_fact:
-              galaxy_needs_redeploy: >-
-                {{
-                  not (
-                    galaxy_baseline_deployed | bool
-                    and galaxy_service_running | bool
-                    and galaxy_api_responding | bool
-                  )
-                }}
-    
+        galaxy_needs_redeploy: >-
+          {{
+            not (
+              galaxy_baseline_deployed | bool
+              and galaxy_service_running | bool
+              and galaxy_api_responding | bool
+            )
+          }}
 
     - name: Report Galaxy baseline status
       ansible.builtin.debug:
@@ -119,7 +117,7 @@
           - "api_rc={{ galaxy_api_status.rc }}"
 
 # ------------------------------------------------------------------------
-# PLAY 2: Redeploy Galaxy baseline if unhealthy
+# PLAY 2A: Redeploy Galaxy baseline if unhealthy
 # ------------------------------------------------------------------------
 - name: Redeploy Galaxy baseline when unhealthy
   hosts: galaxyservers
@@ -177,10 +175,65 @@
       ansible.builtin.debug:
         msg: "Galaxy baseline is healthy. Skipping galaxy_deployment role."
       when: not (galaxy_needs_redeploy | default(true) | bool)
+
+# ------------------------------------------------------------------------
+# PLAY 2B: Ensure Galaxy static assets are readable by nginx
+# ------------------------------------------------------------------------
+- name: Ensure Galaxy static assets are readable by nginx
+  hosts: galaxyservers
+  become: true
+  gather_facts: false
+
+  vars:
+    galaxy_server_dir: "{{ galaxy_root | default('/srv/galaxy/server') }}"
+    galaxy_static_dir: "{{ galaxy_server_dir }}/static"
+    galaxy_runtime_user: "{{ galaxy_user | default(galaxy_user_name | default('galaxy')) }}"
+    galaxy_runtime_group: "{{ galaxy_group | default(galaxy_user_name | default('galaxy')) }}"
+    nginx_runtime_user: "{{ nginx_user | default('www-data') }}"
+
+  tasks:
+    - name: Add nginx user to Galaxy group
+      ansible.builtin.user:
+        name: "{{ nginx_runtime_user }}"
+        groups: "{{ galaxy_runtime_group }}"
+        append: true
+
+    - name: Ensure Galaxy server directory is traversable by Galaxy group
+      ansible.builtin.file:
+        path: "{{ galaxy_server_dir }}"
+        owner: "{{ galaxy_runtime_user }}"
+        group: "{{ galaxy_runtime_group }}"
+        mode: "0750"
+        state: directory
+
+    - name: Ensure Galaxy static directory belongs to Galaxy group
+      ansible.builtin.file:
+        path: "{{ galaxy_static_dir }}"
+        owner: "{{ galaxy_runtime_user }}"
+        group: "{{ galaxy_runtime_group }}"
+        state: directory
+        recurse: true
+
+    - name: Ensure Galaxy static directories are executable/readable
+      ansible.builtin.command:
+        cmd: "find {{ galaxy_static_dir }} -type d -exec chmod 0755 {} +"
+      changed_when: false
+
+    - name: Ensure Galaxy static files are readable
+      ansible.builtin.command:
+        cmd: "find {{ galaxy_static_dir }} -type f -exec chmod 0644 {} +"
+      changed_when: false
+
+    - name: Restart nginx so group membership is refreshed
+      ansible.builtin.systemd:
+        name: nginx
+        state: restarted
+      failed_when: false
+#
 ## ------------------------------------------------------------------------
 ## PLAY 3: Install/configure ImmuneML overlay from PyPI
 ## ------------------------------------------------------------------------
-#- name: Install ImmuneML runtime on Galaxy
+#- name: Install ImmuneML runtime on Galaxy from PyPI
 #  hosts: galaxyservers
 #  become: true
 #
@@ -195,14 +248,10 @@
 #    # --------------------------------------------------------------------
 #    # PyPI version handling
 #    # --------------------------------------------------------------------
-#    # If immuneml_upgrade_to_latest is false:
-#    #   install immuneML==immuneml_version
-#    #
-#    # If immuneml_upgrade_to_latest is true:
-#    #   install latest available immuneML from PyPI
 #    immuneml_version_resolved: "{{ immuneml_version | default('3.0.27') }}"
-#    immuneml_upgrade_to_latest_resolved: "{{ immuneml_upgrade_to_latest | default(false) | bool }}"
-#    immuneml_force_reinstall_resolved: "{{ immuneml_force_reinstall | default(false) | bool }}"
+#    immuneml_upgrade_to_latest_resolved: "{{ immuneml_upgrade_to_latest | default(true) | bool }}"
+#    immuneml_reinstall_if_present_resolved: "{{ immuneml_reinstall_if_present | default(true) | bool }}"
+#    immuneml_run_quickstart_resolved: "{{ immuneml_run_quickstart | default(false) | bool }}"
 #
 #    # --------------------------------------------------------------------
 #    # Runtime user
@@ -218,12 +267,13 @@
 #          - "ImmuneML source: PyPI"
 #          - "Pinned version: {{ immuneml_version_resolved }}"
 #          - "Upgrade to latest: {{ immuneml_upgrade_to_latest_resolved }}"
-#          - "Force reinstall: {{ immuneml_force_reinstall_resolved }}"
+#          - "Reinstall if venv exists: {{ immuneml_reinstall_if_present_resolved }}"
 #
 #    - name: Ensure ImmuneML system dependencies are installed
 #      ansible.builtin.apt:
 #        name:
 #          - python3
+#          - python3-dev
 #          - python3-venv
 #          - python3-pip
 #          - build-essential
@@ -235,6 +285,7 @@
 #          - libblas-dev
 #          - liblapack-dev
 #          - libhdf5-dev
+#          - libgfortran5
 #        state: present
 #        update_cache: true
 #
@@ -254,11 +305,18 @@
 #        group: "{{ galaxy_runtime_group }}"
 #        mode: "0755"
 #
-#    - name: Remove existing ImmuneML virtual environment when force reinstall is enabled
+#    - name: Check whether ImmuneML virtual environment exists
+#      ansible.builtin.stat:
+#        path: "{{ immuneml_venv_resolved }}/bin/python"
+#      register: immuneml_venv_python_status
+#
+#    - name: Remove existing ImmuneML virtual environment before reinstall
 #      ansible.builtin.file:
 #        path: "{{ immuneml_venv_resolved }}"
 #        state: absent
-#      when: immuneml_force_reinstall_resolved
+#      when:
+#        - immuneml_reinstall_if_present_resolved
+#        - immuneml_venv_python_status.stat.exists
 #
 #    - name: Create ImmuneML Python virtual environment
 #      ansible.builtin.command:
@@ -266,31 +324,60 @@
 #        creates: "{{ immuneml_venv_resolved }}/bin/activate"
 #      become_user: "{{ galaxy_runtime_user }}"
 #
-#    - name: Upgrade Python packaging tools in ImmuneML virtual environment
+#    - name: Upgrade pip, wheel, and modern setuptools in ImmuneML virtual environment
 #      ansible.builtin.pip:
 #        name:
 #          - pip
 #          - wheel
-#          - setuptools
+#          - "setuptools>=75.3.0"
 #        state: latest
 #        virtualenv: "{{ immuneml_venv_resolved }}"
 #      become_user: "{{ galaxy_runtime_user }}"
 #
-#    - name: Install pinned ImmuneML version from PyPI
+#    - name: Install immuneML runtime dependency stack from PyPI
 #      ansible.builtin.pip:
-#        name: "immuneML=={{ immuneml_version_resolved }}"
+#        name:
+#          - "numpy==1.26.4"
+#          - "scipy==1.12.0"
+#          - "pandas>=2.1.0"
+#          - "PyYAML>=5.3"
+#          - "scikit-learn"
+#          - "matplotlib"
+#          - "editdistance"
+#          - "regex"
+#          - "tzlocal"
+#          - "airr>=1.5.1"
+#          - "pystache"
+#          - "dill>=0.3"
+#          - "plotly"
+#          - "matplotlib-venn"
+#          - "bionumpy>=1.0.12"
+#          - "umap-learn"
+#          - "olga>=1.2.4"
+#          - "psutil"
+#          - "kaleido"
+#          - "logomaker"
+#          - "python-glmnet==2.6.1"
 #        virtualenv: "{{ immuneml_venv_resolved }}"
 #        extra_args: "--upgrade"
 #      become_user: "{{ galaxy_runtime_user }}"
-#      when: not immuneml_upgrade_to_latest_resolved
 #
-#    - name: Install latest ImmuneML version from PyPI
+#    - name: Install latest ImmuneML package from PyPI without dependency resolver
 #      ansible.builtin.pip:
 #        name: "immuneML"
 #        state: latest
 #        virtualenv: "{{ immuneml_venv_resolved }}"
+#        extra_args: "--upgrade --no-deps"
 #      become_user: "{{ galaxy_runtime_user }}"
 #      when: immuneml_upgrade_to_latest_resolved
+#
+#    - name: Install pinned ImmuneML package from PyPI without dependency resolver
+#      ansible.builtin.pip:
+#        name: "immuneML=={{ immuneml_version_resolved }}"
+#        virtualenv: "{{ immuneml_venv_resolved }}"
+#        extra_args: "--upgrade --no-deps"
+#      become_user: "{{ galaxy_runtime_user }}"
+#      when: not immuneml_upgrade_to_latest_resolved
 #
 #    - name: Create immune-ml command symlink
 #      ansible.builtin.file:
@@ -327,4 +414,4 @@
 #      become_user: "{{ galaxy_runtime_user }}"
 #      args:
 #        creates: "{{ immuneml_install_dir_resolved }}/quickstart_results"
-#      when: immuneml_run_quickstart | default(false) | bool
+#      when: immuneml_run_quickstart_resolved
