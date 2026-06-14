@@ -423,9 +423,9 @@
         creates: "{{ immuneml_install_dir_resolved }}/quickstart_results"
       when: immuneml_run_quickstart_resolved
 # ------------------------------------------------------------------------
-# PLAY 4: Register official ImmuneML Galaxy tools
+# PLAY 4: Register official ImmuneML Galaxy tools in Avant-style menu
 # ------------------------------------------------------------------------
-- name: Register official ImmuneML Galaxy tools
+- name: Register official ImmuneML Galaxy tools in Avant-style menu
   hosts: galaxyservers
   become: true
 
@@ -462,7 +462,7 @@
     - name: Announce ImmuneML Galaxy tool registration
       ansible.builtin.debug:
         msg:
-          - "Registering official immuneML Galaxy tools."
+          - "Registering official immuneML Galaxy tools in Avant-style menu."
           - "Tool source repo: {{ immuneml_tools_repo_resolved }}"
           - "Tool source version: {{ immuneml_tools_version_resolved }}"
           - "Tool source directory: {{ immuneml_tools_source_dir_resolved }}"
@@ -528,7 +528,7 @@
         file_type: file
       register: immuneml_tool_xml_find
 
-    - name: Build immuneML tool wrapper list
+    - name: Build immuneML XML filename list
       ansible.builtin.set_fact:
         immuneml_tool_xml_files: >-
           {{
@@ -558,7 +558,7 @@
         path: "{{ galaxy_tool_conf }}"
       register: galaxy_tool_conf_status
 
-    - name: Create minimal Galaxy tool_conf.xml if missing
+    - name: Create Avant-style Galaxy tool_conf.xml if missing
       ansible.builtin.copy:
         dest: "{{ galaxy_tool_conf }}"
         owner: "{{ galaxy_runtime_user }}"
@@ -570,17 +570,63 @@
           </toolbox>
       when: not galaxy_tool_conf_status.stat.exists
 
-    - name: Register official immuneML tools in Galaxy toolbox
+    - name: Register immuneML tools in Avant-style Galaxy toolbox
       ansible.builtin.blockinfile:
-        path: "{{ galaxy_tool_conf }}"
-        marker: "<!-- {mark} immuneML tools managed by Ansible -->"
-        insertbefore: "</toolbox>"
-        block: |
-          <section id="immuneml" name="immuneML">
-          {% for tool_xml in immuneml_tool_xml_files %}
-              <tool file="immuneml/{{ tool_xml }}" />
-          {% endfor %}
-          </section>
+          path: "{{ galaxy_tool_conf }}"
+          marker: "<!-- {mark} immuneML tools managed by Ansible -->"
+          insertbefore: "</toolbox>"
+          block: |
+            block: |
+            <!-- Data import and simulation -->
+            <section id="immuneml_data_import_and_simulation" name="Data import and simulation">
+            {% if 'immuneml_dataset.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_dataset.xml" />
+            {% endif %}
+            {% if 'immuneml_simulate_random_dummy_dataset.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_simulate_random_dummy_dataset.xml" />
+            {% endif %}
+            {% if 'immuneml_simulate_ligo_events.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_simulate_ligo_events.xml" />
+            {% endif %}
+            <tool file="data_source/upload.xml" />
+            </section>
+            
+            <!-- Fit classifiers -->
+            <section id="immuneml_fit_classifiers" name="Fit classifiers">
+            {% if 'immuneml_train_repertoire_classifier.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_train_repertoire_classifier.xml" />
+            {% endif %}
+            {% if 'immuneml_train_receptor_classifier.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_train_receptor_classifier.xml" />
+            {% endif %}
+            {% if 'immuneml_train_ml_model.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_train_ml_model.xml" />
+            {% endif %}
+            {% if 'immuneml_apply_ml_model.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_apply_ml_model.xml" />
+            {% endif %}
+            </section>
+            
+            <!-- Fit generative models -->
+            <section id="immuneml_fit_generative_models" name="Fit generative models">
+            {% if 'immuneml_train_gen_model.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_train_gen_model.xml" />
+            {% endif %}
+            {% if 'immuneml_apply_gen_model.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_apply_gen_model.xml" />
+            {% endif %}
+            </section>
+            
+            <!-- Other analyses -->
+            <section id="immuneml_other_analyses" name="Other analyses">
+            {% if 'immuneml_clustering.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_clustering.xml" />
+            {% endif %}
+            {% if 'immuneml_yaml.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_yaml.xml" />
+            {% endif %}
+            </section>
+          
 
     - name: Ensure Galaxy uses managed tool_conf.xml
       ansible.builtin.lineinfile:
@@ -654,6 +700,7 @@
     - name: Report ImmuneML Galaxy tool registration complete
       ansible.builtin.debug:
         msg:
-          - "ImmuneML Galaxy tools registered."
+          - "ImmuneML Galaxy tools registered in Avant-style menu."
           - "Refresh Galaxy UI and search for immuneML."
-          - "Registered wrappers: {{ immuneml_tool_xml_files }}"
+          - "Workflows / All workflows is handled by the Galaxy UI."
+          - "Registered wrappers found on disk: {{ immuneml_tool_xml_files }}"

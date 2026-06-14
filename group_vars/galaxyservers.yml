@@ -50,7 +50,7 @@ immuneml_toolshed_repositories: []
 # ---------------------------------------------------------------------
 # immuneML Galaxy wrapper tools
 # ---------------------------------------------------------------------
-immuneml_tools_repo_url: "https://github.com/uio-bmi/immuneml_tools.git"
+immuneml_tools_repo_url: "https://github.com/pavelvazquez/immuneml_tools.git"  #"https://github.com/uio-bmi/immuneml_tools.git"
 immuneml_tools_version: "main"
 immuneml_tools_source_dir: "/srv/galaxy/immuneml_tools_source"
 immuneml_tools_force_refresh: true
