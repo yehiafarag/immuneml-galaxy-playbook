@@ -457,7 +457,19 @@
     # --------------------------------------------------------------------
     galaxy_runtime_user: "{{ galaxy_user | default(galaxy_user_name | default('galaxy')) }}"
     galaxy_runtime_group: "{{ galaxy_group | default(galaxy_user_name | default('galaxy')) }}"
+      #--------------------------------------------------------------------
+    # immuneML welcome/static assets from GitHub
+    # --------------------------------------------------------------------
+    galaxy_server_dir_resolved: "{{ galaxy_root | default('/srv/galaxy/server') }}"
+    galaxy_static_dir_resolved: "{{ galaxy_server_dir_resolved }}/static"
+    galaxy_welcome_file: "{{ galaxy_static_dir_resolved }}/welcome.html"
 
+    immuneml_welcome_repo_url_resolved: "{{ immuneml_welcome_repo_url | default('https://github.com/yehiafarag/immuneml-galaxy-playbook.git') }}"
+    immuneml_welcome_repo_version_resolved: "{{ immuneml_welcome_repo_version | default('main') }}"
+    immuneml_welcome_source_dir_resolved: "{{ immuneml_welcome_source_dir | default('/srv/galaxy/immuneml_welcome_source') }}"
+    immuneml_welcome_folder_resolved: "{{ immuneml_welcome_folder | default('files') }}"
+    immuneml_welcome_html_resolved: "{{ immuneml_welcome_html | default('welcome_immuneml.html') }}"
+    immuneml_welcome_force_refresh_resolved: "{{ immuneml_welcome_force_refresh | default(true) | bool }}"
   tasks:
     - name: Announce ImmuneML Galaxy tool registration
       ansible.builtin.debug:
@@ -676,6 +688,138 @@
         path: "{{ galaxy_mutable_config_dir_resolved }}/integrated_tool_panel.xml"
         state: absent
       failed_when: false
+
+
+
+
+    - name: Remove existing immuneML welcome source checkout before refresh
+      ansible.builtin.file:
+          path: "{{ immuneml_welcome_source_dir_resolved }}"
+          state: absent
+      when: immuneml_welcome_force_refresh_resolved
+
+    - name: Clone immuneML welcome/static assets repository
+      ansible.builtin.git:
+              repo: "{{ immuneml_welcome_repo_url_resolved }}"
+              dest: "{{ immuneml_welcome_source_dir_resolved }}"
+              version: "{{ immuneml_welcome_repo_version_resolved }}"
+              force: true
+              update: true
+      become_user: "{{ galaxy_runtime_user }}"
+
+    - name: Check immuneML welcome assets folder exists
+      ansible.builtin.stat:
+              path: "{{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}"
+      register: immuneml_welcome_folder_status
+
+    - name: Fail if immuneML welcome assets folder is missing
+      ansible.builtin.fail:
+              msg: >-
+                Welcome assets folder was not found at
+                {{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}.
+      when: not immuneml_welcome_folder_status.stat.exists
+
+    - name: Check immuneML welcome HTML file exists
+      ansible.builtin.stat:
+              path: "{{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}/{{ immuneml_welcome_html_resolved }}"
+      register: immuneml_welcome_html_status
+
+    - name: Fail if immuneML welcome HTML file is missing
+      ansible.builtin.fail:
+              msg: >-
+                Welcome HTML file was not found at
+                {{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}/{{ immuneml_welcome_html_resolved }}.
+      when: not immuneml_welcome_html_status.stat.exists
+
+    - name: Ensure Galaxy static directory exists
+      ansible.builtin.file:
+              path: "{{ galaxy_static_dir_resolved }}"
+              state: directory
+              owner: "{{ galaxy_runtime_user }}"
+              group: "{{ galaxy_runtime_group }}"
+              mode: "0755"
+
+    - name: Back up existing Galaxy welcome.html if present
+      ansible.builtin.copy:
+              src: "{{ galaxy_welcome_file }}"
+              dest: "{{ galaxy_welcome_file }}.bak"
+              remote_src: true
+              owner: "{{ galaxy_runtime_user }}"
+              group: "{{ galaxy_runtime_group }}"
+              mode: "0644"
+              force: false
+      failed_when: false
+
+    - name: Delete existing Galaxy welcome.html
+      ansible.builtin.file:
+          path: "{{ galaxy_static_dir_resolved }}/welcome.html"
+          state: absent
+
+    - name: Copy immuneML welcome assets into Galaxy static directory
+      ansible.builtin.copy:
+              src: "{{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}/"
+              dest: "{{ galaxy_static_dir_resolved }}"
+              remote_src: true
+              owner: "{{ galaxy_runtime_user }}"
+              group: "{{ galaxy_runtime_group }}"
+              mode: "0644"
+              force: true
+
+#
+#
+    - name: Replace Galaxy welcome.html with immuneML welcome page
+      ansible.builtin.copy:
+        src: "{{ galaxy_static_dir_resolved }}/{{ immuneml_welcome_html_resolved }}"
+        dest: "{{ galaxy_static_dir_resolved }}/welcome.html"
+        remote_src: true
+        owner: "{{ galaxy_runtime_user }}"
+        group: "{{ galaxy_runtime_group }}"
+        mode: "0644"
+        force: true
+
+    - name: Install immuneML welcome page as welcome.html.sample too
+      ansible.builtin.copy:
+          src: "{{ galaxy_static_dir_resolved }}/{{ immuneml_welcome_html_resolved }}"
+          dest: "{{ galaxy_static_dir_resolved }}/welcome.html.sample"
+          remote_src: true
+          owner: "{{ galaxy_runtime_user }}"
+          group: "{{ galaxy_runtime_group }}"
+          mode: "0644"
+          force: true
+
+
+    - name: Ensure nginx can traverse Galaxy directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /srv
+        - /srv/galaxy
+        - /srv/galaxy/server
+
+    - name: Ensure Galaxy static directory is traversable by nginx
+      ansible.builtin.file:
+        path: /srv/galaxy/server/static
+        state: directory
+        mode: "0755"
+
+    - name: Ensure Galaxy static directories are executable/readable
+      ansible.builtin.command:
+        cmd: "find /srv/galaxy/server/static -type d -exec chmod 0755 {} +"
+      changed_when: false
+
+    - name: Ensure Galaxy static files are readable by nginx
+      ansible.builtin.command:
+        cmd: "find /srv/galaxy/server/static -type f -exec chmod 0644 {} +"
+      changed_when: false
+    - name: Restart nginx after welcome page replacement
+      ansible.builtin.systemd:
+        name: nginx
+        state: restarted
+      failed_when: false
+
+
 
     - name: Restart Galaxy after registering immuneML tools
       ansible.builtin.systemd:

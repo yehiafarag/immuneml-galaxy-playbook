@@ -5,3 +5,4 @@ venv/
 .tmp/
 hosts
 .tmp/immuneml_extra_vars.yml
+/files/
