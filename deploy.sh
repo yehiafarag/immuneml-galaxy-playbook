@@ -5,8 +5,6 @@ set -Eeuo pipefail
 # ImmuneML Galaxy Deployment Tool
 # ========================================================================
 #
-# This deployment wrapper is based on the Galaxy deployment script.
-#
 # Responsibilities:
 #   - Prepare local Ansible control environment
 #   - Generate inventory from group_vars/galaxyservers.yml
@@ -17,9 +15,10 @@ set -Eeuo pipefail
 #   Galaxy baseline deployment is handled inside immuneml.yml
 #   through the galaxy_deployment role.
 #
-# ImmuneML installation:
-#   ImmuneML is installed from PyPI only.
-#   Version and upgrade behavior are controlled in group_vars/galaxyservers.yml.
+# immuneML integration:
+#   immuneML Galaxy tools are installed as Galaxy wrapper XML files.
+#   The tools use Galaxy-native Conda/Bioconda dependency resolution.
+#   We do NOT install immuneML with pip inside Galaxy tool environments.
 # ========================================================================
 
 OS_NAME="$(uname -s)"
@@ -29,16 +28,24 @@ DEPLOYMENT_MODE="remote"
 # Terminal Colors Setup
 # ------------------------------------------------------------------------
 if [[ -t 1 ]]; then
-  RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+  RED='\033[0;31m'
+  GREEN='\033[0;32m'
+  YELLOW='\033[1;33m'
+  BLUE='\033[0;34m'
+  NC='\033[0m'
 else
-  RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
+  RED=''
+  GREEN=''
+  YELLOW=''
+  BLUE=''
+  NC=''
 fi
 
-step()   { echo -e "${BLUE}[INFO]${NC} $1"; }
-warn()   { echo -e "${YELLOW}[WARN]${NC} $1"; }
-error()  { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
-success(){ echo -e "${GREEN}[OK]${NC} $1"; }
-fail()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+step()    { echo -e "${BLUE}[INFO]${NC} $1"; }
+warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
+error()   { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+success() { echo -e "${GREEN}[OK]${NC} $1"; }
+fail()    { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 # ------------------------------------------------------------------------
 # Path Configurations
@@ -198,7 +205,7 @@ deploy_remote() {
 
   step "Initiating ImmuneML Galaxy automation play run"
   step "Galaxy baseline deployment is handled inside immuneml.yml through galaxy_deployment"
-  step "ImmuneML installation is handled from PyPI using group_vars/galaxyservers.yml"
+  step "immuneML Galaxy tools use Conda/Bioconda through Galaxy dependency resolvers"
 
   # shellcheck disable=SC1091
   source "$VENV_DIR/bin/activate"
@@ -215,24 +222,54 @@ validate_remote() {
   load_config
   generate_inventory
 
-  step "Querying Galaxy API status"
+  step "Running remote Galaxy and immuneML diagnostics"
 
   # shellcheck disable=SC1091
   source "$VENV_DIR/bin/activate"
 
+  step "Checking Galaxy API endpoint"
   ansible galaxyservers -i "$INVENTORY_FILE" -b -m command -a \
     "curl -sf http://127.0.0.1/api/version" \
     || error "Galaxy API endpoint is not responding."
 
   success "Galaxy API endpoint is responding ✅"
 
-  step "Querying ImmuneML CLI status"
-
+  step "Checking immuneML Galaxy wrapper directory"
   ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a \
-    'if [ -x /usr/local/bin/immune-ml ]; then /usr/local/bin/immune-ml -h; else immune-ml -h; fi' \
-    || error "ImmuneML CLI validation failed."
+    "test -d /srv/galaxy/server/tools/immuneml && ls /srv/galaxy/server/tools/immuneml/*.xml >/dev/null" \
+    || error "immuneML Galaxy wrappers are not installed."
 
-  success "ImmuneML CLI is available and working ✅"
+  success "immuneML Galaxy wrapper XML files exist ✅"
+
+  step "Checking immuneML Conda/Bioconda requirement declaration"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a \
+    "grep -RniE '<requirement[^>]*type=\"package\"[^>]*>[[:space:]]*immuneML[[:space:]]*</requirement>' /srv/galaxy/server/tools/immuneml/*.xml /srv/galaxy/server/tools/immuneml/prod_macros.xml >/dev/null 2>&1" \
+    || error "immuneML wrappers do not declare a Galaxy package requirement for immuneML/Conda."
+
+  success "immuneML Galaxy wrappers declare Conda/Bioconda package requirement ✅"
+
+  step "Checking Galaxy dependency resolver configuration"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a \
+    "test -f /srv/galaxy/config/dependency_resolvers_conf.xml && grep -q '<conda' /srv/galaxy/config/dependency_resolvers_conf.xml" \
+    || error "Galaxy Conda dependency resolver config is missing or incomplete."
+
+  success "Galaxy Conda dependency resolver config exists ✅"
+
+  step "Checking immuneML datatype registration"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a \
+    "test -f /srv/galaxy/config/datatypes_conf.xml && grep -q 'immuneml_receptors.html' /srv/galaxy/config/datatypes_conf.xml" \
+    || error "immuneML datatype registration is missing."
+
+  success "immuneML datatype registration exists ✅"
+
+  step "Checking immuneML welcome page configuration"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a \
+    "grep -q 'welcome_url: /static/welcome_immuneml.html' /srv/galaxy/config/galaxy.yml && test -f /srv/galaxy/server/static/welcome_immuneml.html" \
+    || error "immuneML welcome page or welcome_url is not configured correctly."
+
+  success "immuneML welcome page configuration exists ✅"
+
+  success "Remote Galaxy and immuneML diagnostics completed ✅"
 }
 
 full_remote() {
@@ -292,27 +329,37 @@ clean_remote_immuneml() {
   load_config
   generate_inventory
 
-  warn "This removes only ImmuneML runtime assets from the remote host."
-  warn "It does NOT remove Galaxy, PostgreSQL, Nginx, or Galaxy datasets."
+  warn "This removes only immuneML overlay assets from the remote host."
+  warn "It does NOT remove Galaxy, PostgreSQL, Nginx, Galaxy datasets, or Conda package caches."
 
-  read -rp "Proceed with remote ImmuneML cleanup? (y/n): " ans
-  [[ "$ans" =~ ^[Yy]$ ]] || { step "Remote ImmuneML cleanup aborted"; return; }
+  read -rp "Proceed with remote immuneML overlay cleanup? (y/n): " ans
+  [[ "$ans" =~ ^[Yy]$ ]] || { step "Remote immuneML cleanup aborted"; return; }
 
   # shellcheck disable=SC1091
   source "$VENV_DIR/bin/activate"
 
-  step "Removing ImmuneML runtime directory and command links"
-
+  step "Removing legacy pip runtime links if present"
   ansible galaxyservers -i "$INVENTORY_FILE" -b -m file -a "path=/usr/local/bin/immune-ml state=absent" || true
   ansible galaxyservers -i "$INVENTORY_FILE" -b -m file -a "path=/usr/local/bin/immune-ml-quickstart state=absent" || true
 
-  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a "
-    if [ -d /srv/galaxy/immuneml ]; then
-      rm -rf /srv/galaxy/immuneml
-    fi
-  " || true
+  step "Removing legacy pip runtime directory if present"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m file -a "path=/srv/galaxy/immuneml state=absent" || true
 
-  success "Remote ImmuneML runtime cleanup completed ✅"
+  step "Removing immuneML Galaxy wrapper source checkout"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m file -a "path=/srv/galaxy/immuneml_tools_source state=absent" || true
+
+  step "Removing active immuneML Galaxy tool wrapper directory"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m file -a "path=/srv/galaxy/server/tools/immuneml state=absent" || true
+
+  step "Removing immuneML welcome source checkout"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m file -a "path=/srv/galaxy/immuneml_welcome_source state=absent" || true
+
+  step "Removing cached Galaxy integrated tool panel"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m file -a "path=/srv/galaxy/mutable/config/integrated_tool_panel.xml state=absent" || true
+
+  warn "Managed blocks in tool_conf.xml, datatypes_conf.xml, and galaxy.yml are not removed by this cleanup."
+
+  success "Remote immuneML overlay cleanup completed ✅"
 }
 
 # ========================================================================
@@ -324,15 +371,15 @@ menu() {
   echo " ImmuneML Galaxy Deployment System"
   echo "===================================================="
   echo "1)  Full automated remote ImmuneML Galaxy deployment"
-  echo "2)  Prepare local context control environment (venv)"
+  echo "2)  Prepare local control environment"
   echo "3)  Install dependent Ansible role packages"
   echo "4)  Run remote system ping connectivity analysis"
   echo "5)  Validate ImmuneML orchestrator playbook syntax"
   echo "6)  Run ImmuneML playbook only"
-  echo "7)  Run remote Galaxy and ImmuneML diagnostics"
+  echo "7)  Run remote Galaxy and immuneML diagnostics"
   echo "8)  Execute deployment routines against localhost (Linux only)"
-  echo "9)  Clean local context development dependencies workspace"
-  echo "10) Remove remote ImmuneML runtime assets only"
+  echo "9)  Clean local development dependencies workspace"
+  echo "10) Remove remote immuneML overlay assets only"
   echo "11) Terminate run engine context"
   echo "----------------------------------------------------"
 

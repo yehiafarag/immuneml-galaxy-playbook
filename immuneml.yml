@@ -8,7 +8,8 @@
 # Flow:
 #   1. Check whether the Galaxy baseline already exists
 #   2. If Galaxy is missing, run the galaxy_deployment role
-#   3. Install ImmuneML runtime on top of Galaxy
+#   3. Configure immuneML runtime strategy for Galaxy-native Conda usage
+#   4. Register immuneML Galaxy wrappers, datatype, menu, and welcome page
 #
 # The galaxy_deployment role is installed from requirements.yml.
 # ========================================================================
@@ -25,6 +26,8 @@
     galaxy_server_dir: "{{ galaxy_root | default('/srv/galaxy/server') }}"
     galaxy_config_file: "{{ galaxy_config_dir | default('/srv/galaxy/config') }}/galaxy.yml"
     galaxy_service_unit: "{{ galaxy_service_name | default('galaxy') }}"
+    galaxy_server_dir_resolved: "{{ galaxy_root | default('/srv/galaxy/server') }}"
+    galaxy_builtin_datatypes_conf: "{{ galaxy_server_dir_resolved }}/config/datatypes_conf.xml.sample"
 
   tasks:
     - name: Check Galaxy server directory
@@ -137,6 +140,7 @@
         owner: root
         group: root
         mode: "1777"
+
     - name: Ensure Galaxy base directory exists
       ansible.builtin.file:
         path: "{{ galaxy_base_dir_resolved }}"
@@ -238,198 +242,79 @@
       failed_when: false
 
 # ------------------------------------------------------------------------
-# PLAY 3: Install/configure ImmuneML overlay from PyPI
+# PLAY 3: Configure immuneML Conda/Bioconda runtime strategy
 # ------------------------------------------------------------------------
-- name: Install ImmuneML runtime on Galaxy from PyPI
+- name: Configure immuneML runtime strategy
   hosts: galaxyservers
   become: true
+  gather_facts: false
 
   vars:
-    # --------------------------------------------------------------------
-    # ImmuneML runtime paths
-    # --------------------------------------------------------------------
-    immuneml_install_dir_resolved: "{{ immuneml_install_dir | default('/srv/galaxy/immuneml') }}"
-    immuneml_venv_resolved: "{{ immuneml_venv | default('/srv/galaxy/immuneml/venv') }}"
-    immuneml_reference_dir_resolved: "{{ immuneml_reference_dir | default('/srv/galaxy/var/data/immuneml_references') }}"
+    immuneml_runtime_strategy_resolved: "{{ immuneml_runtime_strategy | default('conda') }}"
+    immuneml_cli_runtime_enabled_resolved: "{{ immuneml_cli_runtime_enabled | default(false) | bool }}"
 
-    # --------------------------------------------------------------------
-    # PyPI version handling
-    # --------------------------------------------------------------------
-    immuneml_version_resolved: "{{ immuneml_version | default('3.0.27') }}"
-    immuneml_upgrade_to_latest_resolved: "{{ immuneml_upgrade_to_latest | default(true) | bool }}"
-    immuneml_reinstall_if_present_resolved: "{{ immuneml_reinstall_if_present | default(true) | bool }}"
-    immuneml_run_quickstart_resolved: "{{ immuneml_run_quickstart | default(false) | bool }}"
+    galaxy_config_dir_resolved: "{{ galaxy_config_dir | default('/srv/galaxy/config') }}"
+    galaxy_config_file: "{{ galaxy_config_dir_resolved }}/galaxy.yml"
+    galaxy_dependency_resolvers_conf: "{{ galaxy_config_dir_resolved }}/dependency_resolvers_conf.xml"
 
-    # --------------------------------------------------------------------
-    # Runtime user
-    # --------------------------------------------------------------------
     galaxy_runtime_user: "{{ galaxy_user | default(galaxy_user_name | default('galaxy')) }}"
     galaxy_runtime_group: "{{ galaxy_group | default(galaxy_user_name | default('galaxy')) }}"
+    galaxy_enable_conda_dependencies_resolved: "{{ galaxy_enable_conda_dependencies | default(true) | bool }}"
 
   tasks:
-    - name: Announce ImmuneML integration phase
+    - name: Report immuneML runtime strategy
       ansible.builtin.debug:
         msg:
-          - "Galaxy baseline is ready. Starting ImmuneML runtime integration..."
-          - "ImmuneML source: PyPI"
-          - "Pinned version: {{ immuneml_version_resolved }}"
-          - "Upgrade to latest: {{ immuneml_upgrade_to_latest_resolved }}"
-          - "Reinstall if venv exists: {{ immuneml_reinstall_if_present_resolved }}"
+          - "immuneML runtime strategy = {{ immuneml_runtime_strategy_resolved }}"
+          - "Galaxy tools will use Conda/Bioconda through wrapper requirements."
+          - "Standalone pip CLI runtime enabled = {{ immuneml_cli_runtime_enabled_resolved }}"
 
-    - name: Ensure ImmuneML system dependencies are installed
-      ansible.builtin.apt:
-        name:
-          - python3
-          - python3-dev
-          - python3-venv
-          - python3-pip
-          - build-essential
-          - gcc
-          - g++
-          - gfortran
-          - git
-          - curl
-          - libblas-dev
-          - liblapack-dev
-          - libhdf5-dev
-          - libgfortran5
-        state: present
-        update_cache: true
+    - name: Assert Conda runtime strategy is selected
+      ansible.builtin.assert:
+        that:
+          - immuneml_runtime_strategy_resolved == "conda"
+        fail_msg: >-
+          This playbook expects immuneml_runtime_strategy: conda.
+          Do not use pip runtime for Galaxy tool execution.
+        success_msg: "immuneML Conda/Bioconda runtime strategy selected."
 
-    - name: Create ImmuneML install directory
-      ansible.builtin.file:
-        path: "{{ immuneml_install_dir_resolved }}"
-        state: directory
+    - name: Ensure Galaxy dependency resolver config exists
+      ansible.builtin.copy:
+        dest: "{{ galaxy_dependency_resolvers_conf }}"
         owner: "{{ galaxy_runtime_user }}"
         group: "{{ galaxy_runtime_group }}"
-        mode: "0755"
+        mode: "0644"
+        content: |
+          <?xml version="1.0"?>
+          <dependency_resolvers>
+              <tool_shed_packages />
+              <galaxy_packages />
+              <conda
+                  prefix="/srv/galaxy/tool_deps/_conda"
+                  channels="bioconda,conda-forge,defaults"
+                  auto_init="true"
+                  auto_install="true" />
+          </dependency_resolvers>
+      when: galaxy_enable_conda_dependencies_resolved
 
-    - name: Create ImmuneML reference directory
-      ansible.builtin.file:
-        path: "{{ immuneml_reference_dir_resolved }}"
-        state: directory
-        owner: "{{ galaxy_runtime_user }}"
-        group: "{{ galaxy_runtime_group }}"
-        mode: "0755"
+    - name: Ensure Galaxy uses dependency_resolvers_conf.xml
+      ansible.builtin.lineinfile:
+        path: "{{ galaxy_config_file }}"
+        regexp: '^\s*dependency_resolvers_config_file:.*$'
+        line: "    dependency_resolvers_config_file: {{ galaxy_dependency_resolvers_conf }}"
+        insertafter: '^galaxy:\s*$'
+        backup: true
+      when: galaxy_enable_conda_dependencies_resolved
 
-    - name: Check whether ImmuneML virtual environment exists
-      ansible.builtin.stat:
-        path: "{{ immuneml_venv_resolved }}/bin/python"
-      register: immuneml_venv_python_status
-
-    - name: Remove existing ImmuneML virtual environment before reinstall
-      ansible.builtin.file:
-        path: "{{ immuneml_venv_resolved }}"
-        state: absent
-      when:
-        - immuneml_reinstall_if_present_resolved
-        - immuneml_venv_python_status.stat.exists
-
-    - name: Create ImmuneML Python virtual environment
-      ansible.builtin.command:
-        cmd: "python3 -m venv {{ immuneml_venv_resolved }}"
-        creates: "{{ immuneml_venv_resolved }}/bin/activate"
-      become_user: "{{ galaxy_runtime_user }}"
-
-    - name: Upgrade pip, wheel, and modern setuptools in ImmuneML virtual environment
-      ansible.builtin.pip:
-        name:
-          - pip
-          - wheel
-          - "setuptools>=75.3.0"
-        state: latest
-        virtualenv: "{{ immuneml_venv_resolved }}"
-      become_user: "{{ galaxy_runtime_user }}"
-
-    - name: Install immuneML runtime dependency stack from PyPI
-      ansible.builtin.pip:
-        name:
-          - "numpy==1.26.4"
-          - "scipy==1.12.0"
-          - "pandas>=2.1.0"
-          - "PyYAML>=5.3"
-          - "scikit-learn"
-          - "matplotlib"
-          - "editdistance"
-          - "regex"
-          - "tzlocal"
-          - "airr>=1.5.1"
-          - "pystache"
-          - "dill>=0.3"
-          - "plotly"
-          - "matplotlib-venn"
-          - "bionumpy>=1.0.12"
-          - "umap-learn"
-          - "olga>=1.2.4"
-          - "psutil"
-          - "kaleido"
-          - "logomaker"
-          - "python-glmnet==2.6.1"
-        virtualenv: "{{ immuneml_venv_resolved }}"
-        extra_args: "--upgrade"
-      become_user: "{{ galaxy_runtime_user }}"
-
-    - name: Install latest ImmuneML package from PyPI without dependency resolver
-      ansible.builtin.pip:
-        name: "immuneML"
-        state: latest
-        virtualenv: "{{ immuneml_venv_resolved }}"
-        extra_args: "--upgrade --no-deps"
-      become_user: "{{ galaxy_runtime_user }}"
-      when: immuneml_upgrade_to_latest_resolved
-
-    - name: Install pinned ImmuneML package from PyPI without dependency resolver
-      ansible.builtin.pip:
-        name: "immuneML=={{ immuneml_version_resolved }}"
-        virtualenv: "{{ immuneml_venv_resolved }}"
-        extra_args: "--upgrade --no-deps"
-      become_user: "{{ galaxy_runtime_user }}"
-      when: not immuneml_upgrade_to_latest_resolved
-
-    - name: Create immune-ml command symlink
-      ansible.builtin.file:
-        src: "{{ immuneml_venv_resolved }}/bin/immune-ml"
-        dest: /usr/local/bin/immune-ml
-        state: link
-        force: true
-
-    - name: Create immune-ml-quickstart command symlink
-      ansible.builtin.file:
-        src: "{{ immuneml_venv_resolved }}/bin/immune-ml-quickstart"
-        dest: /usr/local/bin/immune-ml-quickstart
-        state: link
-        force: true
-
-    - name: Validate ImmuneML CLI
-      ansible.builtin.command:
-        cmd: "{{ immuneml_venv_resolved }}/bin/immune-ml -h"
-      changed_when: false
-
-    - name: Check installed ImmuneML package version
-      ansible.builtin.command:
-        cmd: "{{ immuneml_venv_resolved }}/bin/python -m pip show immuneML"
-      register: immuneml_installed_package_info
-      changed_when: false
-
-    - name: Report installed ImmuneML package information
-      ansible.builtin.debug:
-        msg: "{{ immuneml_installed_package_info.stdout_lines }}"
-
-    - name: Optionally run ImmuneML quickstart
-      ansible.builtin.command:
-        cmd: "{{ immuneml_venv_resolved }}/bin/immune-ml-quickstart {{ immuneml_install_dir_resolved }}/quickstart_results"
-      become_user: "{{ galaxy_runtime_user }}"
-      args:
-        creates: "{{ immuneml_install_dir_resolved }}/quickstart_results"
-      when: immuneml_run_quickstart_resolved
 # ------------------------------------------------------------------------
-# PLAY 4: Register official ImmuneML Galaxy tools in Avant-style menu
+# PLAY 4: Register official ImmuneML Galaxy tools menu
 # ------------------------------------------------------------------------
-- name: Register official ImmuneML Galaxy tools in Avant-style menu
+- name: Register official ImmuneML Galaxy tools menu
   hosts: galaxyservers
   become: true
 
   vars:
+
     # --------------------------------------------------------------------
     # Galaxy paths
     # --------------------------------------------------------------------
@@ -438,31 +323,28 @@
     galaxy_mutable_config_dir_resolved: "{{ galaxy_mutable_config_dir | default('/srv/galaxy/mutable/config') }}"
     galaxy_service_unit: "{{ galaxy_service_name | default('galaxy') }}"
 
+    galaxy_server_dir_resolved: "{{ galaxy_root | default('/srv/galaxy/server') }}"
+
     galaxy_tool_conf: "{{ galaxy_config_dir_resolved }}/tool_conf.xml"
     galaxy_config_file: "{{ galaxy_config_dir_resolved }}/galaxy.yml"
     galaxy_datatypes_conf: "{{ galaxy_config_dir_resolved }}/datatypes_conf.xml"
+    galaxy_builtin_datatypes_conf: "{{ galaxy_server_dir_resolved }}/config/datatypes_conf.xml.sample"
 
     # --------------------------------------------------------------------
-    # Official immuneML Galaxy wrapper source
+    # immuneML Galaxy wrapper source
     # --------------------------------------------------------------------
-    immuneml_tools_repo_resolved: "{{ immuneml_tools_repo_url | default('https://github.com/uio-bmi/immuneml_tools.git') }}"
+    immuneml_tools_repo_resolved: "{{ immuneml_tools_repo_url | default('https://github.com/pavelvazquez/immuneml_tools.git') }}"
     immuneml_tools_version_resolved: "{{ immuneml_tools_version | default('main') }}"
     immuneml_tools_source_dir_resolved: "{{ immuneml_tools_source_dir | default('/srv/galaxy/immuneml_tools_source') }}"
     immuneml_tools_force_refresh_resolved: "{{ immuneml_tools_force_refresh | default(true) | bool }}"
 
     immuneml_tool_dir: "{{ galaxy_tool_dir_resolved }}/immuneml"
+    immuneml_prod_macros_path: "{{ immuneml_tool_dir }}/prod_macros.xml"
 
     # --------------------------------------------------------------------
-    # Runtime user
-    # --------------------------------------------------------------------
-    galaxy_runtime_user: "{{ galaxy_user | default(galaxy_user_name | default('galaxy')) }}"
-    galaxy_runtime_group: "{{ galaxy_group | default(galaxy_user_name | default('galaxy')) }}"
-      #--------------------------------------------------------------------
     # immuneML welcome/static assets from GitHub
     # --------------------------------------------------------------------
-    galaxy_server_dir_resolved: "{{ galaxy_root | default('/srv/galaxy/server') }}"
     galaxy_static_dir_resolved: "{{ galaxy_server_dir_resolved }}/static"
-    galaxy_welcome_file: "{{ galaxy_static_dir_resolved }}/welcome.html"
 
     immuneml_welcome_repo_url_resolved: "{{ immuneml_welcome_repo_url | default('https://github.com/yehiafarag/immuneml-galaxy-playbook.git') }}"
     immuneml_welcome_repo_version_resolved: "{{ immuneml_welcome_repo_version | default('main') }}"
@@ -470,21 +352,27 @@
     immuneml_welcome_folder_resolved: "{{ immuneml_welcome_folder | default('files') }}"
     immuneml_welcome_html_resolved: "{{ immuneml_welcome_html | default('welcome_immuneml.html') }}"
     immuneml_welcome_force_refresh_resolved: "{{ immuneml_welcome_force_refresh | default(true) | bool }}"
+
+    # --------------------------------------------------------------------
+    # Runtime user
+    # --------------------------------------------------------------------
+    galaxy_runtime_user: "{{ galaxy_user | default(galaxy_user_name | default('galaxy')) }}"
+    galaxy_runtime_group: "{{ galaxy_group | default(galaxy_user_name | default('galaxy')) }}"
+
   tasks:
     - name: Announce ImmuneML Galaxy tool registration
       ansible.builtin.debug:
         msg:
-          - "Registering official immuneML Galaxy tools in Avant-style menu."
+          - "Registering official immuneML Galaxy tools menu."
           - "Tool source repo: {{ immuneml_tools_repo_resolved }}"
           - "Tool source version: {{ immuneml_tools_version_resolved }}"
           - "Tool source directory: {{ immuneml_tools_source_dir_resolved }}"
           - "Galaxy tool directory: {{ immuneml_tool_dir }}"
           - "Galaxy tool_conf.xml: {{ galaxy_tool_conf }}"
 
-    - name: Ensure git is installed for fetching immuneML Galaxy tools
+    - name: Ensure git is installed
       ansible.builtin.apt:
-        name:
-          - git
+        name: git
         state: present
         update_cache: true
 
@@ -511,7 +399,7 @@
         update: true
       become_user: "{{ galaxy_runtime_user }}"
 
-    - name: Remove old immuneML Galaxy tool directory before installing official wrappers
+    - name: Remove old immuneML Galaxy tool directory before installing wrappers
       ansible.builtin.file:
         path: "{{ immuneml_tool_dir }}"
         state: absent
@@ -532,6 +420,31 @@
         owner: "{{ galaxy_runtime_user }}"
         group: "{{ galaxy_runtime_group }}"
         mode: preserve
+    - name: Allow YAML runner to accept txt, yaml, and yml Galaxy datatypes
+      ansible.builtin.replace:
+          path: "{{ immuneml_tool_dir }}/immuneml_yaml.xml"
+          regexp: 'format="txt"'
+          replace: 'format="txt,yaml,yml"'
+
+    - name: Check immuneML prod_macros.xml exists
+      ansible.builtin.stat:
+        path: "{{ immuneml_prod_macros_path }}"
+      register: immuneml_prod_macros_status
+
+    - name: Fail if immuneML prod_macros.xml is missing
+      ansible.builtin.fail:
+        msg: "prod_macros.xml was not found at {{ immuneml_prod_macros_path }}"
+      when: not immuneml_prod_macros_status.stat.exists
+
+    - name: Show immuneML prod_macros.xml version and requirement lines
+      ansible.builtin.command:
+        cmd: "grep -nE 'VERSION|requirement.*immuneml|requirement.*immuneML' {{ immuneml_prod_macros_path }}"
+      register: immuneml_prod_macros_version_lines
+      changed_when: false
+
+    - name: Report immuneML prod_macros.xml version and requirement lines
+      ansible.builtin.debug:
+        msg: "{{ immuneml_prod_macros_version_lines.stdout_lines }}"
 
     - name: Find immuneML Galaxy XML tool wrappers
       ansible.builtin.find:
@@ -570,7 +483,7 @@
         path: "{{ galaxy_tool_conf }}"
       register: galaxy_tool_conf_status
 
-    - name: Create Avant-style Galaxy tool_conf.xml if missing
+    - name: Create Galaxy tool_conf.xml if missing
       ansible.builtin.copy:
         dest: "{{ galaxy_tool_conf }}"
         owner: "{{ galaxy_runtime_user }}"
@@ -582,63 +495,61 @@
           </toolbox>
       when: not galaxy_tool_conf_status.stat.exists
 
-    - name: Register immuneML tools in Avant-style Galaxy toolbox
+    - name: Register immuneML tools in Galaxy toolbox
       ansible.builtin.blockinfile:
-          path: "{{ galaxy_tool_conf }}"
-          marker: "<!-- {mark} immuneML tools managed by Ansible -->"
-          insertbefore: "</toolbox>"
-          block: |
-            block: |
-            <!-- Data import and simulation -->
-            <section id="immuneml_data_import_and_simulation" name="Data import and simulation">
-            {% if 'immuneml_dataset.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_dataset.xml" />
-            {% endif %}
-            {% if 'immuneml_simulate_random_dummy_dataset.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_simulate_random_dummy_dataset.xml" />
-            {% endif %}
-            {% if 'immuneml_simulate_ligo_events.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_simulate_ligo_events.xml" />
-            {% endif %}
-            <tool file="data_source/upload.xml" />
-            </section>
-            
-            <!-- Fit classifiers -->
-            <section id="immuneml_fit_classifiers" name="Fit classifiers">
-            {% if 'immuneml_train_repertoire_classifier.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_train_repertoire_classifier.xml" />
-            {% endif %}
-            {% if 'immuneml_train_receptor_classifier.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_train_receptor_classifier.xml" />
-            {% endif %}
-            {% if 'immuneml_train_ml_model.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_train_ml_model.xml" />
-            {% endif %}
-            {% if 'immuneml_apply_ml_model.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_apply_ml_model.xml" />
-            {% endif %}
-            </section>
-            
-            <!-- Fit generative models -->
-            <section id="immuneml_fit_generative_models" name="Fit generative models">
-            {% if 'immuneml_train_gen_model.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_train_gen_model.xml" />
-            {% endif %}
-            {% if 'immuneml_apply_gen_model.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_apply_gen_model.xml" />
-            {% endif %}
-            </section>
-            
-            <!-- Other analyses -->
-            <section id="immuneml_other_analyses" name="Other analyses">
-            {% if 'immuneml_clustering.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_clustering.xml" />
-            {% endif %}
-            {% if 'immuneml_yaml.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_yaml.xml" />
-            {% endif %}
-            </section>
-          
+        path: "{{ galaxy_tool_conf }}"
+        marker: "<!-- {mark} immuneML tools managed by Ansible -->"
+        insertbefore: "</toolbox>"
+        block: |
+          <!-- Data import and simulation -->
+          <section id="immuneml_data_import_and_simulation" name="Data import and simulation">
+          {% if 'immuneml_dataset.xml' in immuneml_tool_xml_files %}
+              <tool file="immuneml/immuneml_dataset.xml" />
+          {% endif %}
+          {% if 'immuneml_simulate_random_dummy_dataset.xml' in immuneml_tool_xml_files %}
+              <tool file="immuneml/immuneml_simulate_random_dummy_dataset.xml" />
+          {% endif %}
+          {% if 'immuneml_simulate_ligo_events.xml' in immuneml_tool_xml_files %}
+              <tool file="immuneml/immuneml_simulate_ligo_events.xml" />
+          {% endif %}
+              <tool file="data_source/upload.xml" />
+          </section>
+
+          <!-- Fit classifiers -->
+          <section id="immuneml_fit_classifiers" name="Fit classifiers">
+          {% if 'immuneml_train_repertoire_classifier.xml' in immuneml_tool_xml_files %}
+              <tool file="immuneml/immuneml_train_repertoire_classifier.xml" />
+          {% endif %}
+          {% if 'immuneml_train_receptor_classifier.xml' in immuneml_tool_xml_files %}
+              <tool file="immuneml/immuneml_train_receptor_classifier.xml" />
+          {% endif %}
+          {% if 'immuneml_train_ml_model.xml' in immuneml_tool_xml_files %}
+              <tool file="immuneml/immuneml_train_ml_model.xml" />
+          {% endif %}
+          {% if 'immuneml_apply_ml_model.xml' in immuneml_tool_xml_files %}
+              <tool file="immuneml/immuneml_apply_ml_model.xml" />
+          {% endif %}
+          </section>
+
+          <!-- Fit generative models -->
+          <section id="immuneml_fit_generative_models" name="Fit generative models">
+          {% if 'immuneml_train_gen_model.xml' in immuneml_tool_xml_files %}
+              <tool file="immuneml/immuneml_train_gen_model.xml" />
+          {% endif %}
+          {% if 'immuneml_apply_gen_model.xml' in immuneml_tool_xml_files %}
+              <tool file="immuneml/immuneml_apply_gen_model.xml" />
+          {% endif %}
+          </section>
+
+          <!-- Other analyses -->
+          <section id="immuneml_other_analyses" name="Other analyses">
+          {% if 'immuneml_clustering.xml' in immuneml_tool_xml_files %}
+              <tool file="immuneml/immuneml_clustering.xml" />
+          {% endif %}
+          {% if 'immuneml_yaml.xml' in immuneml_tool_xml_files %}
+              <tool file="immuneml/immuneml_yaml.xml" />
+          {% endif %}
+          </section>
 
     - name: Ensure Galaxy uses managed tool_conf.xml
       ansible.builtin.lineinfile:
@@ -653,19 +564,57 @@
         path: "{{ galaxy_datatypes_conf }}"
       register: galaxy_datatypes_conf_status
 
-    - name: Create minimal Galaxy datatypes_conf.xml if missing
+    - name: Check Galaxy built-in datatypes_conf.xml.sample
+      ansible.builtin.stat:
+        path: "{{ galaxy_builtin_datatypes_conf }}"
+      register: galaxy_builtin_datatypes_conf_status
+
+    - name: Fail if Galaxy built-in datatypes_conf.xml.sample is missing
+      ansible.builtin.fail:
+        msg: "Galaxy built-in datatypes sample file is missing at {{ galaxy_builtin_datatypes_conf }}"
+      when: not galaxy_builtin_datatypes_conf_status.stat.exists
+
+    - name: Create managed Galaxy datatypes_conf.xml from Galaxy sample
       ansible.builtin.copy:
+        src: "{{ galaxy_builtin_datatypes_conf }}"
         dest: "{{ galaxy_datatypes_conf }}"
+        remote_src: true
         owner: "{{ galaxy_runtime_user }}"
         group: "{{ galaxy_runtime_group }}"
         mode: "0644"
-        content: |
-          <?xml version="1.0"?>
-          <datatypes>
-              <registration>
-              </registration>
-          </datatypes>
-      when: not galaxy_datatypes_conf_status.stat.exists
+        force: true
+
+    - name: Check whether yaml datatype is already registered
+      ansible.builtin.command:
+        cmd: "grep -q 'extension=\"yaml\"' {{ galaxy_datatypes_conf }}"
+      register: galaxy_yaml_datatype_check
+      changed_when: false
+      failed_when: false
+
+    - name: Check whether yml datatype is already registered
+      ansible.builtin.command:
+        cmd: "grep -q 'extension=\"yml\"' {{ galaxy_datatypes_conf }}"
+      register: galaxy_yml_datatype_check
+      changed_when: false
+      failed_when: false
+
+    - name: Register yaml datatype if missing
+      ansible.builtin.blockinfile:
+        path: "{{ galaxy_datatypes_conf }}"
+        marker: "<!-- {mark} YAML datatype managed by Ansible -->"
+        insertbefore: "</registration>"
+        block: |
+          <datatype extension="yaml" type="galaxy.datatypes.text:Text" subclass="True"/>
+      when: galaxy_yaml_datatype_check.rc != 0
+
+    - name: Register yml datatype if missing
+      ansible.builtin.blockinfile:
+        path: "{{ galaxy_datatypes_conf }}"
+        marker: "<!-- {mark} YML datatype managed by Ansible -->"
+        insertbefore: "</registration>"
+        block: |
+          <datatype extension="yml" type="galaxy.datatypes.text:Text" subclass="True"/>
+      when: galaxy_yml_datatype_check.rc != 0
 
     - name: Register immuneML receptors datatype
       ansible.builtin.blockinfile:
@@ -673,7 +622,7 @@
         marker: "<!-- {mark} immuneML datatypes managed by Ansible -->"
         insertbefore: "</registration>"
         block: |
-          <datatype extension="immuneml_receptors" type="galaxy.datatypes.text:Html" subclass="True"/>
+          <datatype extension="immuneml_receptors.html" type="galaxy.datatypes.text:Html" subclass="True"/>
 
     - name: Ensure Galaxy uses managed datatypes_conf.xml
       ansible.builtin.lineinfile:
@@ -689,104 +638,88 @@
         state: absent
       failed_when: false
 
-
-
-
     - name: Remove existing immuneML welcome source checkout before refresh
       ansible.builtin.file:
-          path: "{{ immuneml_welcome_source_dir_resolved }}"
-          state: absent
+        path: "{{ immuneml_welcome_source_dir_resolved }}"
+        state: absent
       when: immuneml_welcome_force_refresh_resolved
 
     - name: Clone immuneML welcome/static assets repository
       ansible.builtin.git:
-              repo: "{{ immuneml_welcome_repo_url_resolved }}"
-              dest: "{{ immuneml_welcome_source_dir_resolved }}"
-              version: "{{ immuneml_welcome_repo_version_resolved }}"
-              force: true
-              update: true
+        repo: "{{ immuneml_welcome_repo_url_resolved }}"
+        dest: "{{ immuneml_welcome_source_dir_resolved }}"
+        version: "{{ immuneml_welcome_repo_version_resolved }}"
+        force: true
+        update: true
       become_user: "{{ galaxy_runtime_user }}"
 
     - name: Check immuneML welcome assets folder exists
       ansible.builtin.stat:
-              path: "{{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}"
+        path: "{{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}"
       register: immuneml_welcome_folder_status
 
     - name: Fail if immuneML welcome assets folder is missing
       ansible.builtin.fail:
-              msg: >-
-                Welcome assets folder was not found at
-                {{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}.
+        msg: >-
+          Welcome assets folder was not found at
+          {{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}.
       when: not immuneml_welcome_folder_status.stat.exists
 
     - name: Check immuneML welcome HTML file exists
       ansible.builtin.stat:
-              path: "{{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}/{{ immuneml_welcome_html_resolved }}"
+        path: "{{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}/{{ immuneml_welcome_html_resolved }}"
       register: immuneml_welcome_html_status
 
     - name: Fail if immuneML welcome HTML file is missing
       ansible.builtin.fail:
-              msg: >-
-                Welcome HTML file was not found at
-                {{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}/{{ immuneml_welcome_html_resolved }}.
+        msg: >-
+          Welcome HTML file was not found at
+          {{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}/{{ immuneml_welcome_html_resolved }}.
       when: not immuneml_welcome_html_status.stat.exists
 
     - name: Ensure Galaxy static directory exists
       ansible.builtin.file:
-              path: "{{ galaxy_static_dir_resolved }}"
-              state: directory
-              owner: "{{ galaxy_runtime_user }}"
-              group: "{{ galaxy_runtime_group }}"
-              mode: "0755"
-
-    - name: Back up existing Galaxy welcome.html if present
-      ansible.builtin.copy:
-              src: "{{ galaxy_welcome_file }}"
-              dest: "{{ galaxy_welcome_file }}.bak"
-              remote_src: true
-              owner: "{{ galaxy_runtime_user }}"
-              group: "{{ galaxy_runtime_group }}"
-              mode: "0644"
-              force: false
-      failed_when: false
-
-    - name: Delete existing Galaxy welcome.html
-      ansible.builtin.file:
-          path: "{{ galaxy_static_dir_resolved }}/welcome.html"
-          state: absent
+        path: "{{ galaxy_static_dir_resolved }}"
+        state: directory
+        owner: "{{ galaxy_runtime_user }}"
+        group: "{{ galaxy_runtime_group }}"
+        mode: "0755"
 
     - name: Copy immuneML welcome assets into Galaxy static directory
       ansible.builtin.copy:
-              src: "{{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}/"
-              dest: "{{ galaxy_static_dir_resolved }}"
-              remote_src: true
-              owner: "{{ galaxy_runtime_user }}"
-              group: "{{ galaxy_runtime_group }}"
-              mode: "0644"
-              force: true
-
-#
-#
-    - name: Replace Galaxy welcome.html with immuneML welcome page
-      ansible.builtin.copy:
-        src: "{{ galaxy_static_dir_resolved }}/{{ immuneml_welcome_html_resolved }}"
-        dest: "{{ galaxy_static_dir_resolved }}/welcome.html"
+        src: "{{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}/"
+        dest: "{{ galaxy_static_dir_resolved }}/"
         remote_src: true
         owner: "{{ galaxy_runtime_user }}"
         group: "{{ galaxy_runtime_group }}"
-        mode: "0644"
-        force: true
+        mode: preserve
 
-    - name: Install immuneML welcome page as welcome.html.sample too
-      ansible.builtin.copy:
-          src: "{{ galaxy_static_dir_resolved }}/{{ immuneml_welcome_html_resolved }}"
-          dest: "{{ galaxy_static_dir_resolved }}/welcome.html.sample"
-          remote_src: true
-          owner: "{{ galaxy_runtime_user }}"
-          group: "{{ galaxy_runtime_group }}"
-          mode: "0644"
-          force: true
+    - name: Check immuneML welcome page exists in Galaxy static directory
+      ansible.builtin.stat:
+        path: "{{ galaxy_static_dir_resolved }}/{{ immuneml_welcome_html_resolved }}"
+      register: immuneml_welcome_html_static_status
 
+    - name: Fail if immuneML welcome page was not copied to Galaxy static directory
+      ansible.builtin.fail:
+        msg: >-
+          Cannot configure Galaxy welcome page because
+          {{ galaxy_static_dir_resolved }}/{{ immuneml_welcome_html_resolved }}
+          does not exist after copying welcome assets.
+      when: not immuneml_welcome_html_static_status.stat.exists
+
+    - name: Generate deploy-time welcome page cache-busting version
+      ansible.builtin.command:
+        cmd: date +%s
+      register: immuneml_welcome_cache_bust_version
+      changed_when: false
+
+    - name: Ensure Galaxy uses immuneML welcome page URL with one-time cache busting
+      ansible.builtin.lineinfile:
+        path: "{{ galaxy_config_file }}"
+        regexp: '^\s*welcome_url:.*$'
+        line: "    welcome_url: /static/{{ immuneml_welcome_html_resolved }}?v={{ immuneml_welcome_cache_bust_version.stdout }}"
+        insertafter: '^galaxy:\s*$'
+        backup: true
 
     - name: Ensure nginx can traverse Galaxy directories
       ansible.builtin.file:
@@ -797,29 +730,23 @@
         - /srv
         - /srv/galaxy
         - /srv/galaxy/server
-
-    - name: Ensure Galaxy static directory is traversable by nginx
-      ansible.builtin.file:
-        path: /srv/galaxy/server/static
-        state: directory
-        mode: "0755"
+        - /srv/galaxy/server/static
 
     - name: Ensure Galaxy static directories are executable/readable
       ansible.builtin.command:
-        cmd: "find /srv/galaxy/server/static -type d -exec chmod 0755 {} +"
+        cmd: "find {{ galaxy_static_dir_resolved }} -type d -exec chmod 0755 {} +"
       changed_when: false
 
     - name: Ensure Galaxy static files are readable by nginx
       ansible.builtin.command:
-        cmd: "find /srv/galaxy/server/static -type f -exec chmod 0644 {} +"
+        cmd: "find {{ galaxy_static_dir_resolved }} -type f -exec chmod 0644 {} +"
       changed_when: false
-    - name: Restart nginx after welcome page replacement
+
+    - name: Restart nginx after welcome page configuration
       ansible.builtin.systemd:
         name: nginx
         state: restarted
       failed_when: false
-
-
 
     - name: Restart Galaxy after registering immuneML tools
       ansible.builtin.systemd:
@@ -844,7 +771,8 @@
     - name: Report ImmuneML Galaxy tool registration complete
       ansible.builtin.debug:
         msg:
-          - "ImmuneML Galaxy tools registered in Avant-style menu."
+          - "ImmuneML Galaxy tools registered in menu."
+          - "Using immuneML version from prod_macros.xml."
           - "Refresh Galaxy UI and search for immuneML."
           - "Workflows / All workflows is handled by the Galaxy UI."
           - "Registered wrappers found on disk: {{ immuneml_tool_xml_files }}"
