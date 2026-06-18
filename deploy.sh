@@ -243,7 +243,7 @@ validate_remote() {
 
   step "Checking immuneML Conda/Bioconda requirement declaration"
   ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a \
-    "grep -RniE '<requirement[^>]*type=\"package\"[^>]*>[[:space:]]*immuneML[[:space:]]*</requirement>' /srv/galaxy/server/tools/immuneml/*.xml /srv/galaxy/server/tools/immuneml/prod_macros.xml >/dev/null 2>&1" \
+    "grep -RniEi '<requirement[^>]*type=\"package\"[^>]*>[[:space:]]*immuneml[[:space:]]*</requirement>' /srv/galaxy/server/tools/immuneml/*.xml /srv/galaxy/server/tools/immuneml/prod_macros.xml >/dev/null 2>&1" \
     || error "immuneML wrappers do not declare a Galaxy package requirement for immuneML/Conda."
 
   success "immuneML Galaxy wrappers declare Conda/Bioconda package requirement ✅"
@@ -268,6 +268,13 @@ validate_remote() {
     || error "immuneML welcome page or welcome_url is not configured correctly."
 
   success "immuneML welcome page configuration exists ✅"
+
+  step "Checking Galaxy database backend is PostgreSQL"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a \
+    "grep -q 'database_connection: postgresql://' /srv/galaxy/config/galaxy.yml" \
+    || error "Galaxy is not configured to use PostgreSQL. SQLite can lock and keep jobs queued."
+
+  success "Galaxy PostgreSQL database configuration exists ✅"
 
   success "Remote Galaxy and immuneML diagnostics completed ✅"
 }
@@ -304,6 +311,27 @@ deploy_local() {
   ansible-playbook -i "$INVENTORY_FILE" "$PLAYBOOK" --flush-cache
 
   success "Local ImmuneML Galaxy execution completed successfully ✅"
+}
+
+# ========================================================================
+# CONFIRMATION HELPER
+# ========================================================================
+confirm_dangerous_action() {
+  local expected="$1"
+  local prompt="$2"
+  local answer=""
+
+  echo ""
+  warn "$prompt"
+  warn "This is destructive and cannot be automatically undone."
+  read -rp "Type exactly '${expected}' to continue: " answer
+
+  if [[ "$answer" != "$expected" ]]; then
+    step "Confirmation did not match. Operation cancelled."
+    return 1
+  fi
+
+  return 0
 }
 
 # ========================================================================
@@ -362,6 +390,136 @@ clean_remote_immuneml() {
   success "Remote immuneML overlay cleanup completed ✅"
 }
 
+wipe_remote_galaxy_keep_database_and_datasets() {
+  load_config
+  generate_inventory
+
+  confirm_dangerous_action \
+    "WIPE_GALAXY_KEEP_DB_DATASETS" \
+    "This will remove Galaxy application/runtime/config files, but keep PostgreSQL database and datasets." \
+    || return
+
+  # shellcheck disable=SC1091
+  source "$VENV_DIR/bin/activate"
+
+  step "Stopping Galaxy service"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m systemd -a \
+    "name=galaxy state=stopped" || true
+
+  step "Stopping nginx to avoid serving partially removed files"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m systemd -a \
+    "name=nginx state=stopped" || true
+
+  step "Removing Galaxy application/runtime/config assets while keeping database and datasets"
+
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a "
+    set -e
+
+    echo 'Keeping PostgreSQL database untouched.'
+    echo 'Keeping datasets under ${GALAXY_ROOT}/mutable/datasets if present.'
+
+    rm -rf ${GALAXY_ROOT}/server
+    rm -rf ${GALAXY_ROOT}/venv
+    rm -rf ${GALAXY_ROOT}/config
+    rm -rf ${GALAXY_ROOT}/local_tools
+    rm -rf ${GALAXY_ROOT}/immuneml_tools_source
+    rm -rf ${GALAXY_ROOT}/immuneml_welcome_source
+    rm -rf ${GALAXY_ROOT}/immuneml
+
+    rm -rf ${GALAXY_ROOT}/mutable/cache
+    rm -rf ${GALAXY_ROOT}/mutable/config
+    rm -rf ${GALAXY_ROOT}/mutable/job_working_directory
+    rm -rf ${GALAXY_ROOT}/mutable/dependencies
+    rm -rf ${GALAXY_ROOT}/mutable/shed_tools
+    rm -rf ${GALAXY_ROOT}/mutable/tool_data
+
+    mkdir -p ${GALAXY_ROOT}/mutable/datasets
+    chown -R galaxy:galaxy ${GALAXY_ROOT}/mutable || true
+  " || error "Failed to wipe Galaxy while keeping database and datasets."
+
+  success "Galaxy wiped while keeping PostgreSQL database and datasets ✅"
+  warn "Next run option 6 or option 12 to redeploy Galaxy."
+}
+
+wipe_remote_galaxy_everything() {
+  load_config
+  generate_inventory
+
+  confirm_dangerous_action \
+    "WIPE_GALAXY_EVERYTHING" \
+    "This will remove /srv/galaxy, Galaxy runtime, configs, tools, datasets, and attempt to drop the Galaxy PostgreSQL database/user." \
+    || return
+
+  # shellcheck disable=SC1091
+  source "$VENV_DIR/bin/activate"
+
+  step "Stopping Galaxy service"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m systemd -a \
+    "name=galaxy state=stopped" || true
+
+  step "Stopping nginx"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m systemd -a \
+    "name=nginx state=stopped" || true
+
+  step "Removing Galaxy systemd service if present"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a "
+    set -e
+    systemctl disable galaxy || true
+    rm -f /etc/systemd/system/galaxy.service
+    systemctl daemon-reload
+  " || true
+
+  step "Removing full Galaxy directory tree"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m file -a \
+    "path=${GALAXY_ROOT} state=absent" \
+    || error "Failed to remove ${GALAXY_ROOT}"
+
+  step "Dropping Galaxy PostgreSQL database and user if present"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a "
+    set -e
+
+    if command -v psql >/dev/null 2>&1; then
+      sudo -u postgres psql -tAc \"SELECT 1 FROM pg_database WHERE datname='galaxy'\" | grep -q 1 \
+        && sudo -u postgres dropdb galaxy \
+        || true
+
+      sudo -u postgres psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='galaxy'\" | grep -q 1 \
+        && sudo -u postgres dropuser galaxy \
+        || true
+    fi
+  " || true
+
+  success "Full Galaxy wipe completed ✅"
+  warn "Next deployment will be a fresh install."
+}
+
+force_redeploy_galaxy() {
+  load_config
+  generate_inventory
+
+  warn "This will stop Galaxy and rerun the playbook."
+  warn "It will NOT delete Galaxy files, database, or datasets."
+  warn "Because Galaxy will be stopped, Play 1 should mark the baseline unhealthy and rerun galaxy_deployment."
+
+  read -rp "Proceed with force redeploy? (y/n): " ans
+  [[ "$ans" =~ ^[Yy]$ ]] || { step "Force redeploy aborted"; return; }
+
+  # shellcheck disable=SC1091
+  source "$VENV_DIR/bin/activate"
+
+  step "Stopping Galaxy service"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m systemd -a \
+    "name=galaxy state=stopped" || true
+
+  step "Running ImmuneML Galaxy playbook after stopping Galaxy"
+  ansible-playbook \
+    -i "$INVENTORY_FILE" \
+    "$PLAYBOOK" \
+    --flush-cache
+
+  success "Force redeploy completed ✅"
+}
+
 # ========================================================================
 # INTERACTIVE INTERFACE NAVIGATION MENU
 # ========================================================================
@@ -376,11 +534,14 @@ menu() {
   echo "4)  Run remote system ping connectivity analysis"
   echo "5)  Validate ImmuneML orchestrator playbook syntax"
   echo "6)  Run ImmuneML playbook only"
-  echo "7)  Run remote Galaxy and immuneML diagnostics"
-  echo "8)  Execute deployment routines against localhost (Linux only)"
+  echo "7)  Run remote Galaxy and ImmuneML diagnostics"
+  echo "8)  Deploy Galaxy server and ImmuneML locally (Linux only)"
   echo "9)  Clean local development dependencies workspace"
-  echo "10) Remove remote immuneML overlay assets only"
-  echo "11) Terminate run engine context"
+  echo "10) Remove remote ImmuneML overlay tool only"
+  echo "11) Wipe Galaxy app/config/runtime but KEEP database and datasets"
+  echo "12) Force redeploy Galaxy and ImmuneML"
+  echo "13) DANGER: Wipe Galaxy, datasets, and Galaxy PostgreSQL database"
+  echo "14) Exit"
   echo "----------------------------------------------------"
 
   read -rp "Action Selection: " c
@@ -396,7 +557,10 @@ menu() {
     8) deploy_local ;;
     9) clean_local ;;
     10) clean_remote_immuneml ;;
-    11) exit 0 ;;
+    11) wipe_remote_galaxy_keep_database_and_datasets ;;
+    12) force_redeploy_galaxy ;;
+    13) wipe_remote_galaxy_everything ;;
+    14) exit 0 ;;
     *) warn "Selected instruction parameters are invalid." ; menu ;;
   esac
 }

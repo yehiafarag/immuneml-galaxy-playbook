@@ -14,52 +14,48 @@
 # The galaxy_deployment role is installed from requirements.yml.
 # ========================================================================
 
+
 # ------------------------------------------------------------------------
-# PLAY 1: Check whether Galaxy baseline is deployed and running
+# PLAY 1: Check whether Galaxy baseline is deployed and healthy
 # ------------------------------------------------------------------------
-- name: Check whether Galaxy baseline is deployed and running
+- name: Check whether Galaxy baseline is deployed and healthy
   hosts: galaxyservers
   become: true
   gather_facts: false
 
-  vars:
-    galaxy_server_dir: "{{ galaxy_root | default('/srv/galaxy/server') }}"
-    galaxy_config_file: "{{ galaxy_config_dir | default('/srv/galaxy/config') }}/galaxy.yml"
-    galaxy_service_unit: "{{ galaxy_service_name | default('galaxy') }}"
-    galaxy_server_dir_resolved: "{{ galaxy_root | default('/srv/galaxy/server') }}"
-    galaxy_builtin_datatypes_conf: "{{ galaxy_server_dir_resolved }}/config/datatypes_conf.xml.sample"
+
 
   tasks:
     - name: Check Galaxy server directory
       ansible.builtin.stat:
-        path: "{{ galaxy_server_dir }}"
-      register: galaxy_server_dir_status
+        path: "{{ galaxy_server_dir_resolved }}"
+      register: galaxy_server_dir_resolved_status
 
     - name: Check Galaxy run script
       ansible.builtin.stat:
-        path: "{{ galaxy_server_dir }}/run.sh"
+        path: "{{ galaxy_server_dir_resolved }}/run.sh"
       register: galaxy_run_script_status
 
     - name: Check Galaxy Python package directory
       ansible.builtin.stat:
-        path: "{{ galaxy_server_dir }}/lib/galaxy"
+        path: "{{ galaxy_server_dir_resolved }}/lib/galaxy"
       register: galaxy_python_package_status
 
     - name: Check Galaxy config file
       ansible.builtin.stat:
-        path: "{{ galaxy_config_file }}"
+        path: "{{ galaxy_config_file_resolved }}"
       register: galaxy_config_file_status
 
     - name: Check Galaxy systemd unit exists
       ansible.builtin.command:
-        cmd: "systemctl list-unit-files {{ galaxy_service_unit }}.service"
+        cmd: "systemctl list-unit-files {{ galaxy_service_unit_resolved }}.service"
       register: galaxy_service_unit_status
       changed_when: false
       failed_when: false
 
     - name: Check Galaxy service active state
       ansible.builtin.command:
-        cmd: "systemctl is-active {{ galaxy_service_unit }}"
+        cmd: "systemctl is-active {{ galaxy_service_unit_resolved }}"
       register: galaxy_service_active_status
       changed_when: false
       failed_when: false
@@ -71,11 +67,19 @@
       changed_when: false
       failed_when: false
 
-    - name: Set Galaxy deployment and runtime status
+    - name: Check Galaxy PostgreSQL database_connection
+      ansible.builtin.command:
+        cmd: "grep -nE '^\\s*database_connection:\\s*postgresql://' {{ galaxy_config_file_resolved }}"
+      register: galaxy_database_connection_status
+      changed_when: false
+      failed_when: false
+      when: galaxy_config_file_status.stat.exists
+
+    - name: Set Galaxy baseline status facts
       ansible.builtin.set_fact:
         galaxy_baseline_deployed: >-
           {{
-            galaxy_server_dir_status.stat.exists
+            galaxy_server_dir_resolved_status.stat.exists
             and galaxy_config_file_status.stat.exists
             and galaxy_service_unit_status.rc == 0
             and (
@@ -92,154 +96,60 @@
           {{
             galaxy_api_status.rc == 0
           }}
+        galaxy_postgresql_configured: >-
+          {{
+            galaxy_config_file_status.stat.exists
+            and galaxy_database_connection_status is defined
+            and galaxy_database_connection_status.rc == 0
+          }}
 
-    - name: Set Galaxy redeploy decision
+    - name: Set Galaxy baseline attention flag
       ansible.builtin.set_fact:
-        galaxy_needs_redeploy: >-
+        galaxy_needs_baseline_attention: >-
           {{
             not (
               galaxy_baseline_deployed | bool
               and galaxy_service_running | bool
               and galaxy_api_responding | bool
+              and galaxy_postgresql_configured | bool
             )
           }}
 
     - name: Report Galaxy baseline status
       ansible.builtin.debug:
         msg:
-          - "Galaxy needs redeploy = {{ galaxy_needs_redeploy }}"
+          - "Galaxy needs baseline attention = {{ galaxy_needs_baseline_attention }}"
           - "Galaxy baseline deployed = {{ galaxy_baseline_deployed }}"
           - "Galaxy service running = {{ galaxy_service_running }}"
           - "Galaxy API responding = {{ galaxy_api_responding }}"
-          - "server_dir={{ galaxy_server_dir_status.stat.exists }}"
+          - "Galaxy PostgreSQL configured = {{ galaxy_postgresql_configured }}"
+          - "server_dir={{ galaxy_server_dir_resolved_status.stat.exists }}"
           - "run_script={{ galaxy_run_script_status.stat.exists }}"
           - "python_package={{ galaxy_python_package_status.stat.exists }}"
           - "config_file={{ galaxy_config_file_status.stat.exists }}"
           - "service_unit_rc={{ galaxy_service_unit_status.rc }}"
           - "service_active={{ galaxy_service_active_status.stdout | default('unknown') }}"
           - "api_rc={{ galaxy_api_status.rc }}"
+          - "database_connection={{ galaxy_database_connection_status.stdout | default('missing') }}"
 
 # ------------------------------------------------------------------------
-# PLAY 2A: Redeploy Galaxy baseline if unhealthy
+# PLAY 2: Deploy Galaxy baseline only when unhealthy
 # ------------------------------------------------------------------------
-- name: Redeploy Galaxy baseline when unhealthy
+- name: Deploy Galaxy baseline when unhealthy
   hosts: galaxyservers
   become: true
 
-  vars:
-    galaxy_base_dir_resolved: "{{ galaxy_base_dir | default('/srv/galaxy') }}"
-    galaxy_var_dir_resolved: "{{ galaxy_mutable_data_dir | default('/srv/galaxy/var') }}"
-    galaxy_runtime_user: "{{ galaxy_user | default(galaxy_user_name | default('galaxy')) }}"
-    galaxy_runtime_group: "{{ galaxy_group | default(galaxy_user_name | default('galaxy')) }}"
-
   tasks:
-    - name: Ensure Ansible remote tmp directory exists with safe permissions
-      ansible.builtin.file:
-        path: /tmp/.ansible-root
-        state: directory
-        owner: root
-        group: root
-        mode: "1777"
-
-    - name: Ensure Galaxy base directory exists
-      ansible.builtin.file:
-        path: "{{ galaxy_base_dir_resolved }}"
-        state: directory
-        owner: root
-        group: root
-        mode: "0755"
-      when: galaxy_needs_redeploy | default(true) | bool
-
-    - name: Ensure Galaxy mutable data directory exists
-      ansible.builtin.file:
-        path: "{{ galaxy_var_dir_resolved }}"
-        state: directory
-        owner: "{{ galaxy_runtime_user }}"
-        group: "{{ galaxy_runtime_group }}"
-        mode: "0755"
-      when: galaxy_needs_redeploy | default(true) | bool
-
-    - name: Ensure Galaxy mutable config directory exists
-      ansible.builtin.file:
-        path: "{{ galaxy_var_dir_resolved }}/config"
-        state: directory
-        owner: "{{ galaxy_runtime_user }}"
-        group: "{{ galaxy_runtime_group }}"
-        mode: "0755"
-      when: galaxy_needs_redeploy | default(true) | bool
-
-    - name: Repair ownership of Galaxy mutable data tree
-      ansible.builtin.file:
-        path: "{{ galaxy_var_dir_resolved }}"
-        state: directory
-        owner: "{{ galaxy_runtime_user }}"
-        group: "{{ galaxy_runtime_group }}"
-        recurse: true
-      when: galaxy_needs_redeploy | default(true) | bool
-
     - name: Run galaxy_deployment role when Galaxy is missing, inactive, or unhealthy
       ansible.builtin.include_role:
         name: galaxy_deployment
-      when: galaxy_needs_redeploy | default(true) | bool
+      when: galaxy_needs_baseline_attention | default(true) | bool
 
     - name: Skip Galaxy deployment because baseline is healthy
       ansible.builtin.debug:
         msg: "Galaxy baseline is healthy. Skipping galaxy_deployment role."
-      when: not (galaxy_needs_redeploy | default(true) | bool)
+      when: not (galaxy_needs_baseline_attention | default(true) | bool)
 
-# ------------------------------------------------------------------------
-# PLAY 2B: Ensure Galaxy static assets are readable by nginx
-# ------------------------------------------------------------------------
-- name: Ensure Galaxy static assets are readable by nginx
-  hosts: galaxyservers
-  become: true
-  gather_facts: false
-
-  vars:
-    galaxy_server_dir: "{{ galaxy_root | default('/srv/galaxy/server') }}"
-    galaxy_static_dir: "{{ galaxy_server_dir }}/static"
-    galaxy_runtime_user: "{{ galaxy_user | default(galaxy_user_name | default('galaxy')) }}"
-    galaxy_runtime_group: "{{ galaxy_group | default(galaxy_user_name | default('galaxy')) }}"
-    nginx_runtime_user: "{{ nginx_user | default('www-data') }}"
-
-  tasks:
-    - name: Add nginx user to Galaxy group
-      ansible.builtin.user:
-        name: "{{ nginx_runtime_user }}"
-        groups: "{{ galaxy_runtime_group }}"
-        append: true
-
-    - name: Ensure Galaxy server directory is traversable by Galaxy group
-      ansible.builtin.file:
-        path: "{{ galaxy_server_dir }}"
-        owner: "{{ galaxy_runtime_user }}"
-        group: "{{ galaxy_runtime_group }}"
-        mode: "0750"
-        state: directory
-
-    - name: Ensure Galaxy static directory belongs to Galaxy group
-      ansible.builtin.file:
-        path: "{{ galaxy_static_dir }}"
-        owner: "{{ galaxy_runtime_user }}"
-        group: "{{ galaxy_runtime_group }}"
-        state: directory
-        recurse: true
-
-    - name: Ensure Galaxy static directories are executable/readable
-      ansible.builtin.command:
-        cmd: "find {{ galaxy_static_dir }} -type d -exec chmod 0755 {} +"
-      changed_when: false
-
-    - name: Ensure Galaxy static files are readable
-      ansible.builtin.command:
-        cmd: "find {{ galaxy_static_dir }} -type f -exec chmod 0644 {} +"
-      changed_when: false
-
-    - name: Restart nginx so group membership is refreshed
-      ansible.builtin.systemd:
-        name: nginx
-        state: restarted
-      failed_when: false
 
 # ------------------------------------------------------------------------
 # PLAY 3: Configure immuneML Conda/Bioconda runtime strategy
@@ -249,18 +159,6 @@
   become: true
   gather_facts: false
 
-  vars:
-    immuneml_runtime_strategy_resolved: "{{ immuneml_runtime_strategy | default('conda') }}"
-    immuneml_cli_runtime_enabled_resolved: "{{ immuneml_cli_runtime_enabled | default(false) | bool }}"
-
-    galaxy_config_dir_resolved: "{{ galaxy_config_dir | default('/srv/galaxy/config') }}"
-    galaxy_config_file: "{{ galaxy_config_dir_resolved }}/galaxy.yml"
-    galaxy_dependency_resolvers_conf: "{{ galaxy_config_dir_resolved }}/dependency_resolvers_conf.xml"
-
-    galaxy_runtime_user: "{{ galaxy_user | default(galaxy_user_name | default('galaxy')) }}"
-    galaxy_runtime_group: "{{ galaxy_group | default(galaxy_user_name | default('galaxy')) }}"
-    galaxy_enable_conda_dependencies_resolved: "{{ galaxy_enable_conda_dependencies | default(true) | bool }}"
-
   tasks:
     - name: Report immuneML runtime strategy
       ansible.builtin.debug:
@@ -268,6 +166,8 @@
           - "immuneML runtime strategy = {{ immuneml_runtime_strategy_resolved }}"
           - "Galaxy tools will use Conda/Bioconda through wrapper requirements."
           - "Standalone pip CLI runtime enabled = {{ immuneml_cli_runtime_enabled_resolved }}"
+          - "Galaxy Conda prefix = {{ galaxy_conda_prefix_resolved }}"
+          - "Dependency resolver config = {{ galaxy_dependency_resolvers_conf }}"
 
     - name: Assert Conda runtime strategy is selected
       ansible.builtin.assert:
@@ -278,11 +178,20 @@
           Do not use pip runtime for Galaxy tool execution.
         success_msg: "immuneML Conda/Bioconda runtime strategy selected."
 
+    - name: Ensure Galaxy config directory exists
+      ansible.builtin.file:
+        path: "{{ galaxy_config_dir_resolved }}"
+        state: directory
+        owner: "{{ galaxy_runtime_user_resolved }}"
+        group: "{{ galaxy_runtime_group_resolved }}"
+        mode: "0755"
+      when: galaxy_enable_conda_dependencies_resolved
+
     - name: Ensure Galaxy dependency resolver config exists
       ansible.builtin.copy:
         dest: "{{ galaxy_dependency_resolvers_conf }}"
-        owner: "{{ galaxy_runtime_user }}"
-        group: "{{ galaxy_runtime_group }}"
+        owner: "{{ galaxy_runtime_user_resolved }}"
+        group: "{{ galaxy_runtime_group_resolved }}"
         mode: "0644"
         content: |
           <?xml version="1.0"?>
@@ -290,7 +199,7 @@
               <tool_shed_packages />
               <galaxy_packages />
               <conda
-                  prefix="/srv/galaxy/tool_deps/_conda"
+                  prefix="{{ galaxy_conda_prefix_resolved }}"
                   channels="bioconda,conda-forge,defaults"
                   auto_init="true"
                   auto_install="true" />
@@ -299,68 +208,36 @@
 
     - name: Ensure Galaxy uses dependency_resolvers_conf.xml
       ansible.builtin.lineinfile:
-        path: "{{ galaxy_config_file }}"
+        path: "{{ galaxy_config_file_resolved }}"
         regexp: '^\s*dependency_resolvers_config_file:.*$'
         line: "    dependency_resolvers_config_file: {{ galaxy_dependency_resolvers_conf }}"
         insertafter: '^galaxy:\s*$'
         backup: true
       when: galaxy_enable_conda_dependencies_resolved
 
+    - name: Verify Galaxy dependency resolver config contains Conda resolver
+      ansible.builtin.command:
+        cmd: "grep -n '<conda' {{ galaxy_dependency_resolvers_conf }}"
+      register: galaxy_conda_resolver_check
+      changed_when: false
+      when: galaxy_enable_conda_dependencies_resolved
+
+    - name: Report Galaxy Conda dependency resolver
+      ansible.builtin.debug:
+        msg:
+          - "Galaxy Conda dependency resolver is configured."
+          - "{{ galaxy_conda_resolver_check.stdout | default('Conda resolver check skipped') }}"
+      when: galaxy_enable_conda_dependencies_resolved
 # ------------------------------------------------------------------------
-# PLAY 4: Register official ImmuneML Galaxy tools menu
+# PLAY 4: Register official immuneML Galaxy tools menu
 # ------------------------------------------------------------------------
-- name: Register official ImmuneML Galaxy tools menu
+- name: Register official immuneML Galaxy tools menu
   hosts: galaxyservers
   become: true
-
-  vars:
-
-    # --------------------------------------------------------------------
-    # Galaxy paths
-    # --------------------------------------------------------------------
-    galaxy_tool_dir_resolved: "{{ galaxy_tool_dir | default('/srv/galaxy/server/tools') }}"
-    galaxy_config_dir_resolved: "{{ galaxy_config_dir | default('/srv/galaxy/config') }}"
-    galaxy_mutable_config_dir_resolved: "{{ galaxy_mutable_config_dir | default('/srv/galaxy/mutable/config') }}"
-    galaxy_service_unit: "{{ galaxy_service_name | default('galaxy') }}"
-
-    galaxy_server_dir_resolved: "{{ galaxy_root | default('/srv/galaxy/server') }}"
-
-    galaxy_tool_conf: "{{ galaxy_config_dir_resolved }}/tool_conf.xml"
-    galaxy_config_file: "{{ galaxy_config_dir_resolved }}/galaxy.yml"
-    galaxy_datatypes_conf: "{{ galaxy_config_dir_resolved }}/datatypes_conf.xml"
-    galaxy_builtin_datatypes_conf: "{{ galaxy_server_dir_resolved }}/config/datatypes_conf.xml.sample"
-
-    # --------------------------------------------------------------------
-    # immuneML Galaxy wrapper source
-    # --------------------------------------------------------------------
-    immuneml_tools_repo_resolved: "{{ immuneml_tools_repo_url | default('https://github.com/pavelvazquez/immuneml_tools.git') }}"
-    immuneml_tools_version_resolved: "{{ immuneml_tools_version | default('main') }}"
-    immuneml_tools_source_dir_resolved: "{{ immuneml_tools_source_dir | default('/srv/galaxy/immuneml_tools_source') }}"
-    immuneml_tools_force_refresh_resolved: "{{ immuneml_tools_force_refresh | default(true) | bool }}"
-
-    immuneml_tool_dir: "{{ galaxy_tool_dir_resolved }}/immuneml"
-    immuneml_prod_macros_path: "{{ immuneml_tool_dir }}/prod_macros.xml"
-
-    # --------------------------------------------------------------------
-    # immuneML welcome/static assets from GitHub
-    # --------------------------------------------------------------------
-    galaxy_static_dir_resolved: "{{ galaxy_server_dir_resolved }}/static"
-
-    immuneml_welcome_repo_url_resolved: "{{ immuneml_welcome_repo_url | default('https://github.com/yehiafarag/immuneml-galaxy-playbook.git') }}"
-    immuneml_welcome_repo_version_resolved: "{{ immuneml_welcome_repo_version | default('main') }}"
-    immuneml_welcome_source_dir_resolved: "{{ immuneml_welcome_source_dir | default('/srv/galaxy/immuneml_welcome_source') }}"
-    immuneml_welcome_folder_resolved: "{{ immuneml_welcome_folder | default('files') }}"
-    immuneml_welcome_html_resolved: "{{ immuneml_welcome_html | default('welcome_immuneml.html') }}"
-    immuneml_welcome_force_refresh_resolved: "{{ immuneml_welcome_force_refresh | default(true) | bool }}"
-
-    # --------------------------------------------------------------------
-    # Runtime user
-    # --------------------------------------------------------------------
-    galaxy_runtime_user: "{{ galaxy_user | default(galaxy_user_name | default('galaxy')) }}"
-    galaxy_runtime_group: "{{ galaxy_group | default(galaxy_user_name | default('galaxy')) }}"
+  gather_facts: false
 
   tasks:
-    - name: Announce ImmuneML Galaxy tool registration
+    - name: Announce immuneML Galaxy tool registration
       ansible.builtin.debug:
         msg:
           - "Registering official immuneML Galaxy tools menu."
@@ -380,8 +257,8 @@
       ansible.builtin.file:
         path: "{{ immuneml_tools_source_dir_resolved | dirname }}"
         state: directory
-        owner: "{{ galaxy_runtime_user }}"
-        group: "{{ galaxy_runtime_group }}"
+        owner: "{{ galaxy_runtime_user_resolved }}"
+        group: "{{ galaxy_runtime_group_resolved }}"
         mode: "0755"
 
     - name: Remove existing immuneML Galaxy tools source checkout before refresh
@@ -397,7 +274,7 @@
         version: "{{ immuneml_tools_version_resolved }}"
         force: true
         update: true
-      become_user: "{{ galaxy_runtime_user }}"
+      become_user: "{{ galaxy_runtime_user_resolved }}"
 
     - name: Remove old immuneML Galaxy tool directory before installing wrappers
       ansible.builtin.file:
@@ -408,8 +285,8 @@
       ansible.builtin.file:
         path: "{{ immuneml_tool_dir }}"
         state: directory
-        owner: "{{ galaxy_runtime_user }}"
-        group: "{{ galaxy_runtime_group }}"
+        owner: "{{ galaxy_runtime_user_resolved }}"
+        group: "{{ galaxy_runtime_group_resolved }}"
         mode: "0755"
 
     - name: Copy official immuneML Galaxy tools into Galaxy tools directory
@@ -417,34 +294,101 @@
         src: "{{ immuneml_tools_source_dir_resolved }}/"
         dest: "{{ immuneml_tool_dir }}/"
         remote_src: true
-        owner: "{{ galaxy_runtime_user }}"
-        group: "{{ galaxy_runtime_group }}"
+        owner: "{{ galaxy_runtime_user_resolved }}"
+        group: "{{ galaxy_runtime_group_resolved }}"
         mode: preserve
+    - name: Ensure immuneML wrappers declare compatible setuptools dependency
+      ansible.builtin.shell: |
+          set -euo pipefail
+          
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          
+          macros = Path("{{ immuneml_prod_macros_path }}")
+          setuptools_version = "{{ immuneml_setuptools_version | default('80.9.0') }}"
+          
+          if not macros.exists():
+              raise SystemExit(f"Missing prod_macros.xml: {macros}")
+          
+          text = macros.read_text()
+          
+          # Remove any existing setuptools requirement, pinned or unpinned.
+          text = re.sub(
+              r'\s*<requirement[^>]*type="package"[^>]*>setuptools</requirement>\n?',
+              '\n',
+              text
+          )
+          
+          insert_line = f'    <requirement type="package" version="{setuptools_version}">setuptools</requirement>\n'
+          
+          if "</requirements>" not in text:
+              raise SystemExit("Could not find </requirements> in prod_macros.xml")
+          
+          text = text.replace("</requirements>", insert_line + "        </requirements>", 1)
+          macros.write_text(text)
+          PY
+      args:
+          executable: /bin/bash
+      changed_when: false
+
+    - name: Remove previous experimental immuneML PATH patch from wrappers
+      ansible.builtin.shell: |
+          set -euo pipefail
+          
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          
+          tool_dir = Path("{{ immuneml_tool_dir }}")
+          
+          patterns = [
+              r'export PATH="\\?\$\{CONDA_PREFIX\}/bin:\\?\$\{PATH\}"\s*(?:&amp;amp;&amp;amp;|&amp;&amp;|&&)\s*immune-ml\s+',
+              r'export PATH="\$\{CONDA_PREFIX\}/bin:\$\{PATH\}"\s*(?:&amp;amp;&amp;amp;|&amp;&amp;|&&)\s*immune-ml\s+',
+          ]
+          
+          for wrapper in tool_dir.glob("*.xml"):
+              text = wrapper.read_text()
+              original = text
+          
+              for pattern in patterns:
+                  text = re.sub(pattern, "immune-ml ", text)
+          
+              if text != original:
+                  wrapper.write_text(text)
+          PY
+      args:
+          executable: /bin/bash
+      changed_when: false
+
+    - name: Check whether immuneML YAML wrapper exists
+      ansible.builtin.stat:
+        path: "{{ immuneml_tool_dir }}/immuneml_yaml.xml"
+      register: immuneml_yaml_wrapper_status
+
     - name: Allow YAML runner to accept txt, yaml, and yml Galaxy datatypes
       ansible.builtin.replace:
-          path: "{{ immuneml_tool_dir }}/immuneml_yaml.xml"
-          regexp: 'format="txt"'
-          replace: 'format="txt,yaml,yml"'
+        path: "{{ immuneml_tool_dir }}/immuneml_yaml.xml"
+        regexp: 'format="txt"'
+        replace: 'format="txt,yaml,yml"'
+      when: immuneml_yaml_wrapper_status.stat.exists
 
-    - name: Check immuneML prod_macros.xml exists
+    - name: Check whether immuneML prod_macros.xml exists
       ansible.builtin.stat:
         path: "{{ immuneml_prod_macros_path }}"
       register: immuneml_prod_macros_status
 
-    - name: Fail if immuneML prod_macros.xml is missing
-      ansible.builtin.fail:
-        msg: "prod_macros.xml was not found at {{ immuneml_prod_macros_path }}"
-      when: not immuneml_prod_macros_status.stat.exists
-
-    - name: Show immuneML prod_macros.xml version and requirement lines
+    - name: Show immuneML prod_macros.xml version and requirement lines if present
       ansible.builtin.command:
         cmd: "grep -nE 'VERSION|requirement.*immuneml|requirement.*immuneML' {{ immuneml_prod_macros_path }}"
       register: immuneml_prod_macros_version_lines
       changed_when: false
+      failed_when: false
+      when: immuneml_prod_macros_status.stat.exists
 
     - name: Report immuneML prod_macros.xml version and requirement lines
       ansible.builtin.debug:
-        msg: "{{ immuneml_prod_macros_version_lines.stdout_lines }}"
+        msg: "{{ immuneml_prod_macros_version_lines.stdout_lines | default(['prod_macros.xml not present or no version lines found']) }}"
 
     - name: Find immuneML Galaxy XML tool wrappers
       ansible.builtin.find:
@@ -486,8 +430,8 @@
     - name: Create Galaxy tool_conf.xml if missing
       ansible.builtin.copy:
         dest: "{{ galaxy_tool_conf }}"
-        owner: "{{ galaxy_runtime_user }}"
-        group: "{{ galaxy_runtime_group }}"
+        owner: "{{ galaxy_runtime_user_resolved }}"
+        group: "{{ galaxy_runtime_group_resolved }}"
         mode: "0644"
         content: |
           <?xml version="1.0"?>
@@ -501,55 +445,56 @@
         marker: "<!-- {mark} immuneML tools managed by Ansible -->"
         insertbefore: "</toolbox>"
         block: |
-          <!-- Data import and simulation -->
-          <section id="immuneml_data_import_and_simulation" name="Data import and simulation">
-          {% if 'immuneml_dataset.xml' in immuneml_tool_xml_files %}
-              <tool file="immuneml/immuneml_dataset.xml" />
-          {% endif %}
-          {% if 'immuneml_simulate_random_dummy_dataset.xml' in immuneml_tool_xml_files %}
-              <tool file="immuneml/immuneml_simulate_random_dummy_dataset.xml" />
-          {% endif %}
-          {% if 'immuneml_simulate_ligo_events.xml' in immuneml_tool_xml_files %}
-              <tool file="immuneml/immuneml_simulate_ligo_events.xml" />
-          {% endif %}
-              <tool file="data_source/upload.xml" />
-          </section>
-
-          <!-- Fit classifiers -->
-          <section id="immuneml_fit_classifiers" name="Fit classifiers">
-          {% if 'immuneml_train_repertoire_classifier.xml' in immuneml_tool_xml_files %}
-              <tool file="immuneml/immuneml_train_repertoire_classifier.xml" />
-          {% endif %}
-          {% if 'immuneml_train_receptor_classifier.xml' in immuneml_tool_xml_files %}
-              <tool file="immuneml/immuneml_train_receptor_classifier.xml" />
-          {% endif %}
-          {% if 'immuneml_train_ml_model.xml' in immuneml_tool_xml_files %}
-              <tool file="immuneml/immuneml_train_ml_model.xml" />
-          {% endif %}
-          {% if 'immuneml_apply_ml_model.xml' in immuneml_tool_xml_files %}
-              <tool file="immuneml/immuneml_apply_ml_model.xml" />
-          {% endif %}
-          </section>
-
-          <!-- Fit generative models -->
-          <section id="immuneml_fit_generative_models" name="Fit generative models">
-          {% if 'immuneml_train_gen_model.xml' in immuneml_tool_xml_files %}
-              <tool file="immuneml/immuneml_train_gen_model.xml" />
-          {% endif %}
-          {% if 'immuneml_apply_gen_model.xml' in immuneml_tool_xml_files %}
-              <tool file="immuneml/immuneml_apply_gen_model.xml" />
-          {% endif %}
-          </section>
-
-          <!-- Other analyses -->
-          <section id="immuneml_other_analyses" name="Other analyses">
-          {% if 'immuneml_clustering.xml' in immuneml_tool_xml_files %}
-              <tool file="immuneml/immuneml_clustering.xml" />
-          {% endif %}
-          {% if 'immuneml_yaml.xml' in immuneml_tool_xml_files %}
-              <tool file="immuneml/immuneml_yaml.xml" />
-          {% endif %}
-          </section>
+  
+            <!-- Data import and simulation -->
+            <section id="immuneml_data_import_and_simulation" name="Data import and simulation">
+            {% if 'immuneml_dataset.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_dataset.xml" />
+            {% endif %}
+            {% if 'immuneml_simulate_random_dummy_dataset.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_simulate_random_dummy_dataset.xml" />
+            {% endif %}
+            {% if 'immuneml_simulate_ligo_events.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_simulate_ligo_events.xml" />
+            {% endif %}
+            <tool file="data_source/upload.xml" />
+            </section>
+            
+            <!-- Fit classifiers -->
+            <section id="immuneml_fit_classifiers" name="Fit classifiers">
+            {% if 'immuneml_train_repertoire_classifier.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_train_repertoire_classifier.xml" />
+            {% endif %}
+            {% if 'immuneml_train_receptor_classifier.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_train_receptor_classifier.xml" />
+            {% endif %}
+            {% if 'immuneml_train_ml_model.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_train_ml_model.xml" />
+            {% endif %}
+            {% if 'immuneml_apply_ml_model.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_apply_ml_model.xml" />
+            {% endif %}
+            </section>
+            
+            <!-- Fit generative models -->
+            <section id="immuneml_fit_generative_models" name="Fit generative models">
+            {% if 'immuneml_train_gen_model.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_train_gen_model.xml" />
+            {% endif %}
+            {% if 'immuneml_apply_gen_model.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_apply_gen_model.xml" />
+            {% endif %}
+            </section>
+            
+            <!-- Other analyses -->
+            <section id="immuneml_other_analyses" name="Other analyses">
+            {% if 'immuneml_clustering.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_clustering.xml" />
+            {% endif %}
+            {% if 'immuneml_yaml.xml' in immuneml_tool_xml_files %}
+            <tool file="immuneml/immuneml_yaml.xml" />
+            {% endif %}
+            </section>
 
     - name: Ensure Galaxy uses managed tool_conf.xml
       ansible.builtin.lineinfile:
@@ -558,11 +503,6 @@
         line: "    tool_config_file: {{ galaxy_tool_conf }}"
         insertafter: '^galaxy:\s*$'
         backup: true
-
-    - name: Check Galaxy datatypes_conf.xml
-      ansible.builtin.stat:
-        path: "{{ galaxy_datatypes_conf }}"
-      register: galaxy_datatypes_conf_status
 
     - name: Check Galaxy built-in datatypes_conf.xml.sample
       ansible.builtin.stat:
@@ -579,8 +519,8 @@
         src: "{{ galaxy_builtin_datatypes_conf }}"
         dest: "{{ galaxy_datatypes_conf }}"
         remote_src: true
-        owner: "{{ galaxy_runtime_user }}"
-        group: "{{ galaxy_runtime_group }}"
+        owner: "{{ galaxy_runtime_user_resolved }}"
+        group: "{{ galaxy_runtime_group_resolved }}"
         mode: "0644"
         force: true
 
@@ -616,12 +556,13 @@
           <datatype extension="yml" type="galaxy.datatypes.text:Text" subclass="True"/>
       when: galaxy_yml_datatype_check.rc != 0
 
-    - name: Register immuneML receptors datatype
+    - name: Register immuneML receptor datatypes
       ansible.builtin.blockinfile:
         path: "{{ galaxy_datatypes_conf }}"
         marker: "<!-- {mark} immuneML datatypes managed by Ansible -->"
         insertbefore: "</registration>"
         block: |
+          <datatype extension="immuneml_receptors" type="galaxy.datatypes.text:Html" subclass="True"/>
           <datatype extension="immuneml_receptors.html" type="galaxy.datatypes.text:Html" subclass="True"/>
 
     - name: Ensure Galaxy uses managed datatypes_conf.xml
@@ -651,7 +592,7 @@
         version: "{{ immuneml_welcome_repo_version_resolved }}"
         force: true
         update: true
-      become_user: "{{ galaxy_runtime_user }}"
+      become_user: "{{ galaxy_runtime_user_resolved }}"
 
     - name: Check immuneML welcome assets folder exists
       ansible.builtin.stat:
@@ -681,8 +622,8 @@
       ansible.builtin.file:
         path: "{{ galaxy_static_dir_resolved }}"
         state: directory
-        owner: "{{ galaxy_runtime_user }}"
-        group: "{{ galaxy_runtime_group }}"
+        owner: "{{ galaxy_runtime_user_resolved }}"
+        group: "{{ galaxy_runtime_group_resolved }}"
         mode: "0755"
 
     - name: Copy immuneML welcome assets into Galaxy static directory
@@ -690,8 +631,8 @@
         src: "{{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}/"
         dest: "{{ galaxy_static_dir_resolved }}/"
         remote_src: true
-        owner: "{{ galaxy_runtime_user }}"
-        group: "{{ galaxy_runtime_group }}"
+        owner: "{{ galaxy_runtime_user_resolved }}"
+        group: "{{ galaxy_runtime_group_resolved }}"
         mode: preserve
 
     - name: Check immuneML welcome page exists in Galaxy static directory
@@ -750,7 +691,7 @@
 
     - name: Restart Galaxy after registering immuneML tools
       ansible.builtin.systemd:
-        name: "{{ galaxy_service_unit }}"
+        name: "{{ galaxy_service_unit_resolved }}"
         state: restarted
         daemon_reload: true
 
@@ -772,7 +713,7 @@
       ansible.builtin.debug:
         msg:
           - "ImmuneML Galaxy tools registered in menu."
-          - "Using immuneML version from prod_macros.xml."
+          - "Using immuneML version from wrapper macros."
           - "Refresh Galaxy UI and search for immuneML."
           - "Workflows / All workflows is handled by the Galaxy UI."
           - "Registered wrappers found on disk: {{ immuneml_tool_xml_files }}"
