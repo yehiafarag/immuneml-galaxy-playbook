@@ -504,47 +504,9 @@
         state: absent
       failed_when: false
 
-#    - name: Remove existing immuneML welcome source checkout before refresh
-#      ansible.builtin.file:
-#        path: "{{ immuneml_welcome_source_dir_resolved }}"
-#        state: absent
-#      when: immuneml_welcome_force_refresh_resolved
-#
-#    - name: Clone immuneML welcome/static assets repository
-#      ansible.builtin.git:
-#        repo: "{{ immuneml_welcome_repo_url_resolved }}"
-#        dest: "{{ immuneml_welcome_source_dir_resolved }}"
-#        version: "{{ immuneml_welcome_repo_version_resolved }}"
-#        force: true
-#        update: true
-#      become_user: "{{ galaxy_runtime_user_resolved }}"
-#
-#    - name: Check immuneML welcome assets folder exists
-#      ansible.builtin.stat:
-#        path: "{{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}"
-#      register: immuneml_welcome_folder_status
-#
-#    - name: Fail if immuneML welcome assets folder is missing
-#      ansible.builtin.fail:
-#        msg: >-
-#          Welcome assets folder was not found at
-#          {{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}.
-#      when: not immuneml_welcome_folder_status.stat.exists
-#
-#    - name: Check immuneML welcome HTML file exists
-#      ansible.builtin.stat:
-#        path: "{{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}/{{ immuneml_welcome_html_resolved }}"
-#      register: immuneml_welcome_html_status
-#
-#    - name: Fail if immuneML welcome HTML file is missing
-#      ansible.builtin.fail:
-#        msg: >-
-#          Welcome HTML file was not found at
-#          {{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}/{{ immuneml_welcome_html_resolved }}.
-#      when: not immuneml_welcome_html_status.stat.exists
     - name: Check local immuneML welcome HTML file exists
       ansible.builtin.stat:
-      path: "{{ immuneml_welcome_folder_resolved }}/{{ immuneml_welcome_html_resolved }}"
+        path: "{{ immuneml_welcome_folder_resolved }}/{{ immuneml_welcome_html_resolved }}"
       register: immuneml_local_welcome_html_status
       delegate_to: localhost
       become: false
