@@ -419,7 +419,7 @@
         path: "{{ galaxy_tool_conf }}"
         marker: "<!-- {mark} immuneML tools managed by Ansible -->"
         insertbefore: "</toolbox>"
-        block: "{{ lookup('ansible.builtin.template', 'templates/immuneml_toolbox_block.j2') }}"
+        block: "{{ lookup('ansible.builtin.template', 'templates/immuneml_toolbox_block.xml.j2') }}"
 
     - name: Ensure Galaxy uses managed tool_conf.xml
       ansible.builtin.lineinfile:
