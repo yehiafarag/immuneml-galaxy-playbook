@@ -398,58 +398,6 @@ clean_remote_immuneml() {
 
   success "Remote immuneML overlay cleanup completed ✅"
 }
-
-wipe_remote_galaxy_keep_database_and_datasets() {
-  load_config
-  generate_inventory
-
-  confirm_dangerous_action \
-    "WIPE_GALAXY_KEEP_DB_DATASETS" \
-    "This will remove Galaxy application/runtime/config files, but keep PostgreSQL database and datasets." \
-    || return
-
-  # shellcheck disable=SC1091
-  source "$VENV_DIR/bin/activate"
-
-  step "Stopping Galaxy service"
-  ansible galaxyservers -i "$INVENTORY_FILE" -b -m systemd -a \
-    "name=galaxy state=stopped" || true
-
-  step "Stopping nginx to avoid serving partially removed files"
-  ansible galaxyservers -i "$INVENTORY_FILE" -b -m systemd -a \
-    "name=nginx state=stopped" || true
-
-  step "Removing Galaxy application/runtime/config assets while keeping database and datasets"
-
-  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a "
-    set -e
-
-    echo 'Keeping PostgreSQL database untouched.'
-    echo 'Keeping datasets under ${GALAXY_ROOT}/mutable/datasets if present.'
-
-    rm -rf ${GALAXY_ROOT}/server
-    rm -rf ${GALAXY_ROOT}/venv
-    rm -rf ${GALAXY_ROOT}/config
-    rm -rf ${GALAXY_ROOT}/local_tools
-    rm -rf ${GALAXY_ROOT}/immuneml_tools_source
-    rm -rf ${GALAXY_ROOT}/immuneml_welcome_source
-    rm -rf ${GALAXY_ROOT}/immuneml
-
-    rm -rf ${GALAXY_ROOT}/mutable/cache
-    rm -rf ${GALAXY_ROOT}/mutable/config
-    rm -rf ${GALAXY_ROOT}/mutable/job_working_directory
-    rm -rf ${GALAXY_ROOT}/mutable/dependencies
-    rm -rf ${GALAXY_ROOT}/mutable/shed_tools
-    rm -rf ${GALAXY_ROOT}/mutable/tool_data
-
-    mkdir -p ${GALAXY_ROOT}/mutable/datasets
-    chown -R galaxy:galaxy ${GALAXY_ROOT}/mutable || true
-  " || error "Failed to wipe Galaxy while keeping database and datasets."
-
-  success "Galaxy wiped while keeping PostgreSQL database and datasets ✅"
-  warn "Next run option 6 or option 12 to redeploy Galaxy."
-}
-
 wipe_remote_galaxy_everything() {
   load_config
   generate_inventory
@@ -462,65 +410,99 @@ wipe_remote_galaxy_everything() {
   # shellcheck disable=SC1091
   source "$VENV_DIR/bin/activate"
 
-  step "Stopping Galaxy service"
-  ansible galaxyservers -i "$INVENTORY_FILE" -b -m systemd -a \
-    "name=galaxy state=stopped" || true
+  local wipe_playbook
+  wipe_playbook="$(mktemp /tmp/immuneml-galaxy-wipe.XXXXXX.yml)"
 
-  step "Stopping nginx"
-  ansible galaxyservers -i "$INVENTORY_FILE" -b -m systemd -a \
-    "name=nginx state=stopped" || true
+  cat > "$wipe_playbook" <<'EOF'
+---
+- name: Wipe Galaxy contents but keep Galaxy root directory
+  hosts: galaxyservers
+  become: true
+  gather_facts: false
 
-  step "Stopping possible Galaxy child services"
-  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a "
-    systemctl stop galaxy-gunicorn || true
-    systemctl stop galaxy-celery || true
-    systemctl stop galaxy-celery-beat || true
-    pkill -f galaxy || true
-    pkill -f gunicorn || true
-    pkill -f celery || true
-  " || true
+  tasks:
+    - name: Stop Galaxy service
+      ansible.builtin.systemd:
+        name: galaxy
+        state: stopped
+      failed_when: false
 
-  step "Removing Galaxy systemd service if present"
-  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a "
-    set -e
-    systemctl disable galaxy || true
-    rm -f /etc/systemd/system/galaxy.service
-    systemctl daemon-reload
-  " || true
+    - name: Stop nginx service
+      ansible.builtin.systemd:
+        name: nginx
+        state: stopped
+      failed_when: false
 
-  step "Deleting contents inside ${GALAXY_ROOT} but keeping the directory/mountpoint"
-  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a "
-    set -euo pipefail
+    - name: Stop possible Galaxy child services
+      ansible.builtin.shell: |
+        systemctl stop galaxy-gunicorn || true
+        systemctl stop galaxy-celery || true
+        systemctl stop galaxy-celery-beat || true
+        pkill -f galaxy || true
+        pkill -f gunicorn || true
+        pkill -f celery || true
+      args:
+        executable: /bin/bash
+      failed_when: false
+      changed_when: false
 
-    GALAXY_ROOT='${GALAXY_ROOT}'
+    - name: Remove Galaxy systemd service if present
+      ansible.builtin.shell: |
+        set -e
+        systemctl disable galaxy || true
+        rm -f /etc/systemd/system/galaxy.service
+        systemctl daemon-reload
+      args:
+        executable: /bin/bash
+      failed_when: false
 
-    if [ -z \"\$GALAXY_ROOT\" ] || [ \"\$GALAXY_ROOT\" = \"/\" ]; then
-      echo 'Refusing to wipe unsafe GALAXY_ROOT value.'
-      exit 1
-    fi
+    - name: Delete contents inside Galaxy root but keep directory or mountpoint
+      ansible.builtin.shell: |
+        set -euo pipefail
 
-    mkdir -p \"\$GALAXY_ROOT\"
+        galaxy_root="{{ galaxy_root_to_wipe }}"
 
-    find \"\$GALAXY_ROOT\" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+        if [ -z "$galaxy_root" ] || [ "$galaxy_root" = "/" ]; then
+          echo "Refusing to wipe unsafe Galaxy root: $galaxy_root"
+          exit 1
+        fi
 
-    chmod 0755 \"\$GALAXY_ROOT\"
-  " || error "Failed to delete contents inside ${GALAXY_ROOT}"
+        mkdir -p "$galaxy_root"
 
-  step "Dropping Galaxy PostgreSQL database and user if present"
-  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a "
-    set -e
+        find "$galaxy_root" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 
-    if command -v psql >/dev/null 2>&1; then
-      sudo -u postgres psql -tAc \"SELECT 1 FROM pg_database WHERE datname='galaxy'\" | grep -q 1 && {
-        sudo -u postgres psql -d postgres -c \"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='galaxy' AND pid <> pg_backend_pid();\" || true
-        sudo -u postgres dropdb galaxy || true
-      } || true
+        chmod 0755 "$galaxy_root"
+      args:
+        executable: /bin/bash
 
-      sudo -u postgres psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='galaxy'\" | grep -q 1 \
-        && sudo -u postgres dropuser galaxy \
-        || true
-    fi
-  " || true
+    - name: Drop Galaxy PostgreSQL database and user if present
+      ansible.builtin.shell: |
+        set -e
+
+        if command -v psql >/dev/null 2>&1; then
+          if sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='galaxy'" | grep -q 1; then
+            sudo -u postgres psql -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='galaxy' AND pid <> pg_backend_pid();" || true
+            sudo -u postgres dropdb galaxy || true
+          fi
+
+          if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='galaxy'" | grep -q 1; then
+            sudo -u postgres dropuser galaxy || true
+          fi
+        fi
+      args:
+        executable: /bin/bash
+      failed_when: false
+EOF
+
+  step "Wiping Galaxy contents while keeping ${GALAXY_ROOT}"
+  ansible-playbook -i "$INVENTORY_FILE" "$wipe_playbook" \
+    -e "galaxy_root_to_wipe=${GALAXY_ROOT}" \
+    || {
+      rm -f "$wipe_playbook"
+      error "Failed to delete contents inside ${GALAXY_ROOT}"
+    }
+
+  rm -f "$wipe_playbook"
 
   success "Full Galaxy wipe completed while keeping ${GALAXY_ROOT} ✅"
   warn "Next deployment will be a fresh install."

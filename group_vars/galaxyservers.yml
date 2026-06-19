@@ -61,12 +61,10 @@ immuneml_tools_force_refresh: true
 # ---------------------------------------------------------------------
 # immuneML Galaxy welcome/static assets
 # ---------------------------------------------------------------------
-immuneml_welcome_repo_url: "https://github.com/yehiafarag/immuneml-galaxy-playbook.git"
-immuneml_welcome_repo_version: "main"
-immuneml_welcome_source_dir: "/srv/galaxy/immuneml_welcome_source"
+
 immuneml_welcome_folder: "files"
 immuneml_welcome_html: "welcome_immuneml.html"
-immuneml_welcome_force_refresh: true
+
 
 # =====================================================================
 # Orchestration helper variables
