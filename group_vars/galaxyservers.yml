@@ -125,12 +125,16 @@ immuneml_tools_force_refresh_resolved: "{{ immuneml_tools_force_refresh | defaul
 
 immuneml_tool_dir: "{{ galaxy_tool_dir_resolved }}/immuneml"
 immuneml_prod_macros_path: "{{ immuneml_tool_dir }}/prod_macros.xml"
+
+
 # ---------------------------------------------------------------------
 # immuneML Galaxy wrapper dependency compatibility
 # ---------------------------------------------------------------------
 # immuneML currently imports pkg_resources, which is provided by setuptools.
 # Pin setuptools to a compatible version for Galaxy Conda tool environments.
 immuneml_setuptools_version: "80.9.0"
+
+
 # ---------------------------------------------------------------------
 # immuneML welcome/static helper paths
 # ---------------------------------------------------------------------
@@ -140,3 +144,26 @@ immuneml_welcome_source_dir_resolved: "{{ immuneml_welcome_source_dir | default(
 immuneml_welcome_folder_resolved: "{{ immuneml_welcome_folder | default('files') }}"
 immuneml_welcome_html_resolved: "{{ immuneml_welcome_html | default('welcome_immuneml.html') }}"
 immuneml_welcome_force_refresh_resolved: "{{ immuneml_welcome_force_refresh | default(true) | bool }}"
+
+# ---------------------------------------------------------------------
+# Galaxy health check helpers
+# ---------------------------------------------------------------------
+galaxy_enable_https_resolved: "{{ galaxy_enable_https | default(false) | bool }}"
+
+galaxy_http_api_healthcheck_url: "http://127.0.0.1/api/version"
+galaxy_https_api_healthcheck_url: "https://127.0.0.1/api/version"
+
+# false is needed for self-signed certificates
+galaxy_https_validate_certs: false
+
+# ---------------------------------------------------------------------
+# Galaxy branding configuration
+# ---------------------------------------------------------------------
+galaxy_brand: "UiO Galaxy"
+galaxy_page_title: "ImmuneML Galaxy"
+
+galaxy_brand_resolved: "{{ galaxy_brand | default('Galaxy') }}"
+galaxy_page_title_resolved: "{{ galaxy_page_title | default(galaxy_brand_resolved) }}"
+
+galaxy_favicon_ico_src: "{{ immuneml_welcome_folder_resolved }}/favicon.ico"
+galaxy_favicon_svg_src: "{{ immuneml_welcome_folder_resolved }}/favicon.svg"

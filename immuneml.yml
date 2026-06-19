@@ -699,15 +699,28 @@
       ansible.builtin.pause:
         seconds: 300
 
-    - name: Confirm Galaxy API responds after stabilisation wait
+    - name: Confirm Galaxy API responds over HTTP after stabilisation wait
       ansible.builtin.uri:
-        url: "http://127.0.0.1/api/version"
-        method: GET
-        status_code: 200
-      register: galaxy_api_after_restart
+          url: "{{ galaxy_http_api_healthcheck_url }}"
+          method: GET
+          status_code: 200
+      register: galaxy_http_api_after_restart
       retries: 30
       delay: 10
-      until: galaxy_api_after_restart.status == 200
+      until: galaxy_http_api_after_restart.status == 200
+      when: not galaxy_enable_https_resolved
+
+    - name: Confirm Galaxy API responds over HTTPS after stabilisation wait
+      ansible.builtin.uri:
+              url: "{{ galaxy_https_api_healthcheck_url }}"
+              method: GET
+              status_code: 200
+              validate_certs: "{{ galaxy_https_validate_certs }}"
+      register: galaxy_https_api_after_restart
+      retries: 30
+      delay: 10
+      until: galaxy_https_api_after_restart.status == 200
+      when: galaxy_enable_https_resolved
 
     - name: Report ImmuneML Galaxy tool registration complete
       ansible.builtin.debug:
