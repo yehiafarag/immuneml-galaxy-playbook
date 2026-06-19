@@ -228,8 +228,17 @@ validate_remote() {
   source "$VENV_DIR/bin/activate"
 
   step "Checking Galaxy API endpoint"
-  ansible galaxyservers -i "$INVENTORY_FILE" -b -m command -a \
-    "curl -sf http://127.0.0.1/api/version" \
+
+  GALAXY_ENABLE_HTTPS=$(yq -r '.galaxy_enable_https // false' "$CONFIG_FILE")
+  GALAXY_HTTPS_VERIFY=$(yq -r '.galaxy_https_validate_certs // false' "$CONFIG_FILE")
+
+  if [ "$GALAXY_ENABLE_HTTPS" = "true" ]; then
+    API_CHECK_CMD="curl -k -sf https://127.0.0.1/api/version"
+  else
+    API_CHECK_CMD="curl -sf http://127.0.0.1/api/version"
+  fi
+
+  ansible galaxyservers -i "$INVENTORY_FILE" -m shell -a "$API_CHECK_CMD" \
     || error "Galaxy API endpoint is not responding."
 
   success "Galaxy API endpoint is responding ✅"
@@ -447,7 +456,7 @@ wipe_remote_galaxy_everything() {
 
   confirm_dangerous_action \
     "WIPE_GALAXY_EVERYTHING" \
-    "This will remove /srv/galaxy, Galaxy runtime, configs, tools, datasets, and attempt to drop the Galaxy PostgreSQL database/user." \
+    "This will remove Galaxy runtime, configs, tools, datasets, and attempt to drop the Galaxy PostgreSQL database/user. It will keep the Galaxy root directory/mountpoint itself." \
     || return
 
   # shellcheck disable=SC1091
@@ -461,6 +470,16 @@ wipe_remote_galaxy_everything() {
   ansible galaxyservers -i "$INVENTORY_FILE" -b -m systemd -a \
     "name=nginx state=stopped" || true
 
+  step "Stopping possible Galaxy child services"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a "
+    systemctl stop galaxy-gunicorn || true
+    systemctl stop galaxy-celery || true
+    systemctl stop galaxy-celery-beat || true
+    pkill -f galaxy || true
+    pkill -f gunicorn || true
+    pkill -f celery || true
+  " || true
+
   step "Removing Galaxy systemd service if present"
   ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a "
     set -e
@@ -469,19 +488,33 @@ wipe_remote_galaxy_everything() {
     systemctl daemon-reload
   " || true
 
-  step "Removing full Galaxy directory tree"
-  ansible galaxyservers -i "$INVENTORY_FILE" -b -m file -a \
-    "path=${GALAXY_ROOT} state=absent" \
-    || error "Failed to remove ${GALAXY_ROOT}"
+  step "Deleting contents inside ${GALAXY_ROOT} but keeping the directory/mountpoint"
+  ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a "
+    set -euo pipefail
+
+    GALAXY_ROOT='${GALAXY_ROOT}'
+
+    if [ -z \"\$GALAXY_ROOT\" ] || [ \"\$GALAXY_ROOT\" = \"/\" ]; then
+      echo 'Refusing to wipe unsafe GALAXY_ROOT value.'
+      exit 1
+    fi
+
+    mkdir -p \"\$GALAXY_ROOT\"
+
+    find \"\$GALAXY_ROOT\" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+    chmod 0755 \"\$GALAXY_ROOT\"
+  " || error "Failed to delete contents inside ${GALAXY_ROOT}"
 
   step "Dropping Galaxy PostgreSQL database and user if present"
   ansible galaxyservers -i "$INVENTORY_FILE" -b -m shell -a "
     set -e
 
     if command -v psql >/dev/null 2>&1; then
-      sudo -u postgres psql -tAc \"SELECT 1 FROM pg_database WHERE datname='galaxy'\" | grep -q 1 \
-        && sudo -u postgres dropdb galaxy \
-        || true
+      sudo -u postgres psql -tAc \"SELECT 1 FROM pg_database WHERE datname='galaxy'\" | grep -q 1 && {
+        sudo -u postgres psql -d postgres -c \"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='galaxy' AND pid <> pg_backend_pid();\" || true
+        sudo -u postgres dropdb galaxy || true
+      } || true
 
       sudo -u postgres psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='galaxy'\" | grep -q 1 \
         && sudo -u postgres dropuser galaxy \
@@ -489,7 +522,7 @@ wipe_remote_galaxy_everything() {
     fi
   " || true
 
-  success "Full Galaxy wipe completed ✅"
+  success "Full Galaxy wipe completed while keeping ${GALAXY_ROOT} ✅"
   warn "Next deployment will be a fresh install."
 }
 

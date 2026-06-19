@@ -1,0 +1,49 @@
+    <!-- Data import and simulation -->
+    <section id="immuneml_data_import_and_simulation" name="Data import and simulation">
+        {% if 'immuneml_dataset.xml' in immuneml_tool_xml_files %}
+        <tool file="immuneml/immuneml_dataset.xml" />
+        {% endif %}
+        {% if 'immuneml_simulate_random_dummy_dataset.xml' in immuneml_tool_xml_files %}
+        <tool file="immuneml/immuneml_simulate_random_dummy_dataset.xml" />
+        {% endif %}
+        {% if 'immuneml_simulate_ligo_events.xml' in immuneml_tool_xml_files %}
+        <tool file="immuneml/immuneml_simulate_ligo_events.xml" />
+        {% endif %}
+        <tool file="data_source/upload.xml" />
+    </section>
+
+            <!-- Fit classifiers -->
+    <section id="immuneml_fit_classifiers" name="Fit classifiers">
+        {% if 'immuneml_train_repertoire_classifier.xml' in immuneml_tool_xml_files %}
+        <tool file="immuneml/immuneml_train_repertoire_classifier.xml" />
+        {% endif %}
+        {% if 'immuneml_train_receptor_classifier.xml' in immuneml_tool_xml_files %}
+        <tool file="immuneml/immuneml_train_receptor_classifier.xml" />
+        {% endif %}
+        {% if 'immuneml_train_ml_model.xml' in immuneml_tool_xml_files %}
+        <tool file="immuneml/immuneml_train_ml_model.xml" />
+        {% endif %}
+        {% if 'immuneml_apply_ml_model.xml' in immuneml_tool_xml_files %}
+        <tool file="immuneml/immuneml_apply_ml_model.xml" />
+        {% endif %}
+    </section>
+
+            <!-- Fit generative models -->
+    <section id="immuneml_fit_generative_models" name="Fit generative models">
+        {% if 'immuneml_train_gen_model.xml' in immuneml_tool_xml_files %}
+        <tool file="immuneml/immuneml_train_gen_model.xml" />
+        {% endif %}
+        {% if 'immuneml_apply_gen_model.xml' in immuneml_tool_xml_files %}
+        <tool file="immuneml/immuneml_apply_gen_model.xml" />
+        {% endif %}
+    </section>
+
+            <!-- Other analyses -->
+    <section id="immuneml_other_analyses" name="Other analyses">
+        {% if 'immuneml_clustering.xml' in immuneml_tool_xml_files %}
+        <tool file="immuneml/immuneml_clustering.xml" />
+        {% endif %}
+        {% if 'immuneml_yaml.xml' in immuneml_tool_xml_files %}
+        <tool file="immuneml/immuneml_yaml.xml" />
+        {% endif %}
+    </section>

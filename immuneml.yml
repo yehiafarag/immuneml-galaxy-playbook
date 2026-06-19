@@ -2,18 +2,6 @@
 # ========================================================================
 # IMMUNEML GALAXY ORCHESTRATOR
 # ========================================================================
-#
-# This playbook is the main entry point for the ImmuneML Galaxy deployment.
-#
-# Flow:
-#   1. Check whether the Galaxy baseline already exists
-#   2. If Galaxy is missing, run the galaxy_deployment role
-#   3. Configure immuneML runtime strategy for Galaxy-native Conda usage
-#   4. Register immuneML Galaxy wrappers, datatype, menu, and welcome page
-#
-# The galaxy_deployment role is installed from requirements.yml.
-# ========================================================================
-
 
 # ------------------------------------------------------------------------
 # PLAY 1: Check whether Galaxy baseline is deployed and healthy
@@ -22,8 +10,6 @@
   hosts: galaxyservers
   become: true
   gather_facts: false
-
-
 
   tasks:
     - name: Check Galaxy server directory
@@ -133,14 +119,14 @@
           - "database_connection={{ galaxy_database_connection_status.stdout | default('missing') }}"
 
 # ------------------------------------------------------------------------
-# PLAY 2: Deploy Galaxy baseline only when unhealthy
+# PLAY 2: Deploy Galaxy baseline only when baseline needs attention
 # ------------------------------------------------------------------------
-- name: Deploy Galaxy baseline when unhealthy
+- name: Deploy Galaxy baseline only when baseline needs attention
   hosts: galaxyservers
   become: true
 
   tasks:
-    - name: Run galaxy_deployment role when Galaxy is missing, inactive, or unhealthy
+    - name: Run galaxy_deployment role when Galaxy baseline needs attention
       ansible.builtin.include_role:
         name: galaxy_deployment
       when: galaxy_needs_baseline_attention | default(true) | bool
@@ -149,7 +135,6 @@
       ansible.builtin.debug:
         msg: "Galaxy baseline is healthy. Skipping galaxy_deployment role."
       when: not (galaxy_needs_baseline_attention | default(true) | bool)
-
 
 # ------------------------------------------------------------------------
 # PLAY 3: Configure immuneML Conda/Bioconda runtime strategy
@@ -188,22 +173,12 @@
       when: galaxy_enable_conda_dependencies_resolved
 
     - name: Ensure Galaxy dependency resolver config exists
-      ansible.builtin.copy:
+      ansible.builtin.template:
+        src: templates/dependency_resolvers_conf.xml.j2
         dest: "{{ galaxy_dependency_resolvers_conf }}"
         owner: "{{ galaxy_runtime_user_resolved }}"
         group: "{{ galaxy_runtime_group_resolved }}"
         mode: "0644"
-        content: |
-          <?xml version="1.0"?>
-          <dependency_resolvers>
-              <tool_shed_packages />
-              <galaxy_packages />
-              <conda
-                  prefix="{{ galaxy_conda_prefix_resolved }}"
-                  channels="bioconda,conda-forge,defaults"
-                  auto_init="true"
-                  auto_install="true" />
-          </dependency_resolvers>
       when: galaxy_enable_conda_dependencies_resolved
 
     - name: Ensure Galaxy uses dependency_resolvers_conf.xml
@@ -228,6 +203,7 @@
           - "Galaxy Conda dependency resolver is configured."
           - "{{ galaxy_conda_resolver_check.stdout | default('Conda resolver check skipped') }}"
       when: galaxy_enable_conda_dependencies_resolved
+
 # ------------------------------------------------------------------------
 # PLAY 4: Register official immuneML Galaxy tools menu
 # ------------------------------------------------------------------------
@@ -297,68 +273,70 @@
         owner: "{{ galaxy_runtime_user_resolved }}"
         group: "{{ galaxy_runtime_group_resolved }}"
         mode: preserve
-    - name: Ensure immuneML wrappers declare compatible setuptools dependency
-      ansible.builtin.shell: |
-          set -euo pipefail
-          
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          
-          macros = Path("{{ immuneml_prod_macros_path }}")
-          setuptools_version = "{{ immuneml_setuptools_version | default('80.9.0') }}"
-          
-          if not macros.exists():
-              raise SystemExit(f"Missing prod_macros.xml: {macros}")
-          
-          text = macros.read_text()
-          
-          # Remove any existing setuptools requirement, pinned or unpinned.
-          text = re.sub(
-              r'\s*<requirement[^>]*type="package"[^>]*>setuptools</requirement>\n?',
-              '\n',
-              text
-          )
-          
-          insert_line = f'    <requirement type="package" version="{setuptools_version}">setuptools</requirement>\n'
-          
-          if "</requirements>" not in text:
-              raise SystemExit("Could not find </requirements> in prod_macros.xml")
-          
-          text = text.replace("</requirements>", insert_line + "        </requirements>", 1)
-          macros.write_text(text)
-          PY
-      args:
-          executable: /bin/bash
-      changed_when: false
 
     - name: Remove previous experimental immuneML PATH patch from wrappers
       ansible.builtin.shell: |
-          set -euo pipefail
-          
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          
-          tool_dir = Path("{{ immuneml_tool_dir }}")
-          
-          patterns = [
-              r'export PATH="\\?\$\{CONDA_PREFIX\}/bin:\\?\$\{PATH\}"\s*(?:&amp;amp;&amp;amp;|&amp;&amp;|&&)\s*immune-ml\s+',
-              r'export PATH="\$\{CONDA_PREFIX\}/bin:\$\{PATH\}"\s*(?:&amp;amp;&amp;amp;|&amp;&amp;|&&)\s*immune-ml\s+',
-          ]
-          
-          for wrapper in tool_dir.glob("*.xml"):
-              text = wrapper.read_text()
-              original = text
-          
-              for pattern in patterns:
-                  text = re.sub(pattern, "immune-ml ", text)
-          
-              if text != original:
-                  wrapper.write_text(text)
-          PY
+        set -euo pipefail
+
+        python3 - <<'PY'
+        from pathlib import Path
+        import re
+
+        tool_dir = Path("{{ immuneml_tool_dir }}")
+
+        patterns = [
+            r'export PATH="\\?\$\{CONDA_PREFIX\}/bin:\\?\$\{PATH\}"\s*(?:&amp;amp;&amp;amp;|&amp;&amp;|&&)\s*immune-ml\s+',
+            r'export PATH="\$\{CONDA_PREFIX\}/bin:\$\{PATH\}"\s*(?:&amp;amp;&amp;amp;|&amp;&amp;|&&)\s*immune-ml\s+',
+        ]
+
+        for wrapper in tool_dir.glob("*.xml"):
+            text = wrapper.read_text()
+            original = text
+
+            text = text.replace("&amp;amp;&amp;amp;", "&amp;&amp;")
+
+            for pattern in patterns:
+                text = re.sub(pattern, "immune-ml ", text)
+
+            if text != original:
+                wrapper.write_text(text)
+        PY
       args:
-          executable: /bin/bash
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Ensure immuneML wrappers declare compatible setuptools dependency
+      ansible.builtin.shell: |
+        set -euo pipefail
+
+        python3 - <<'PY'
+        from pathlib import Path
+        import re
+
+        macros = Path("{{ immuneml_prod_macros_path }}")
+        setuptools_version = "{{ immuneml_setuptools_version | default('80.9.0') }}"
+
+        if not macros.exists():
+            raise SystemExit(f"Missing prod_macros.xml: {macros}")
+
+        text = macros.read_text()
+
+        text = re.sub(
+            r'\s*<requirement[^>]*type="package"[^>]*>setuptools</requirement>\n?',
+            '\n',
+            text
+        )
+
+        insert_line = f'            <requirement type="package" version="{setuptools_version}">setuptools</requirement>\n'
+
+        if "</requirements>" not in text:
+            raise SystemExit("Could not find </requirements> in prod_macros.xml")
+
+        text = text.replace("</requirements>", insert_line + "        </requirements>", 1)
+        macros.write_text(text)
+        PY
+      args:
+        executable: /bin/bash
       changed_when: false
 
     - name: Check whether immuneML YAML wrapper exists
@@ -380,7 +358,7 @@
 
     - name: Show immuneML prod_macros.xml version and requirement lines if present
       ansible.builtin.command:
-        cmd: "grep -nE 'VERSION|requirement.*immuneml|requirement.*immuneML' {{ immuneml_prod_macros_path }}"
+        cmd: "grep -nE 'VERSION|requirement.*immuneml|requirement.*immuneML|requirement.*setuptools' {{ immuneml_prod_macros_path }}"
       register: immuneml_prod_macros_version_lines
       changed_when: false
       failed_when: false
@@ -428,15 +406,12 @@
       register: galaxy_tool_conf_status
 
     - name: Create Galaxy tool_conf.xml if missing
-      ansible.builtin.copy:
+      ansible.builtin.template:
+        src: templates/tool_conf_empty.xml.j2
         dest: "{{ galaxy_tool_conf }}"
         owner: "{{ galaxy_runtime_user_resolved }}"
         group: "{{ galaxy_runtime_group_resolved }}"
         mode: "0644"
-        content: |
-          <?xml version="1.0"?>
-          <toolbox monitor="true">
-          </toolbox>
       when: not galaxy_tool_conf_status.stat.exists
 
     - name: Register immuneML tools in Galaxy toolbox
@@ -444,61 +419,11 @@
         path: "{{ galaxy_tool_conf }}"
         marker: "<!-- {mark} immuneML tools managed by Ansible -->"
         insertbefore: "</toolbox>"
-        block: |
-  
-            <!-- Data import and simulation -->
-            <section id="immuneml_data_import_and_simulation" name="Data import and simulation">
-            {% if 'immuneml_dataset.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_dataset.xml" />
-            {% endif %}
-            {% if 'immuneml_simulate_random_dummy_dataset.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_simulate_random_dummy_dataset.xml" />
-            {% endif %}
-            {% if 'immuneml_simulate_ligo_events.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_simulate_ligo_events.xml" />
-            {% endif %}
-            <tool file="data_source/upload.xml" />
-            </section>
-            
-            <!-- Fit classifiers -->
-            <section id="immuneml_fit_classifiers" name="Fit classifiers">
-            {% if 'immuneml_train_repertoire_classifier.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_train_repertoire_classifier.xml" />
-            {% endif %}
-            {% if 'immuneml_train_receptor_classifier.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_train_receptor_classifier.xml" />
-            {% endif %}
-            {% if 'immuneml_train_ml_model.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_train_ml_model.xml" />
-            {% endif %}
-            {% if 'immuneml_apply_ml_model.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_apply_ml_model.xml" />
-            {% endif %}
-            </section>
-            
-            <!-- Fit generative models -->
-            <section id="immuneml_fit_generative_models" name="Fit generative models">
-            {% if 'immuneml_train_gen_model.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_train_gen_model.xml" />
-            {% endif %}
-            {% if 'immuneml_apply_gen_model.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_apply_gen_model.xml" />
-            {% endif %}
-            </section>
-            
-            <!-- Other analyses -->
-            <section id="immuneml_other_analyses" name="Other analyses">
-            {% if 'immuneml_clustering.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_clustering.xml" />
-            {% endif %}
-            {% if 'immuneml_yaml.xml' in immuneml_tool_xml_files %}
-            <tool file="immuneml/immuneml_yaml.xml" />
-            {% endif %}
-            </section>
+        block: "{{ lookup('ansible.builtin.template', 'templates/immuneml_toolbox_block.j2') }}"
 
     - name: Ensure Galaxy uses managed tool_conf.xml
       ansible.builtin.lineinfile:
-        path: "{{ galaxy_config_file }}"
+        path: "{{ galaxy_config_file_resolved }}"
         regexp: '^\s*tool_config_file:.*$'
         line: "    tool_config_file: {{ galaxy_tool_conf }}"
         insertafter: '^galaxy:\s*$'
@@ -567,7 +492,7 @@
 
     - name: Ensure Galaxy uses managed datatypes_conf.xml
       ansible.builtin.lineinfile:
-        path: "{{ galaxy_config_file }}"
+        path: "{{ galaxy_config_file_resolved }}"
         regexp: '^\s*datatypes_config_file:.*$'
         line: "    datatypes_config_file: {{ galaxy_datatypes_conf }}"
         insertafter: '^galaxy:\s*$'
@@ -656,7 +581,7 @@
 
     - name: Ensure Galaxy uses immuneML welcome page URL with one-time cache busting
       ansible.builtin.lineinfile:
-        path: "{{ galaxy_config_file }}"
+        path: "{{ galaxy_config_file_resolved }}"
         regexp: '^\s*welcome_url:.*$'
         line: "    welcome_url: /static/{{ immuneml_welcome_html_resolved }}?v={{ immuneml_welcome_cache_bust_version.stdout }}"
         insertafter: '^galaxy:\s*$'
@@ -701,9 +626,9 @@
 
     - name: Confirm Galaxy API responds over HTTP after stabilisation wait
       ansible.builtin.uri:
-          url: "{{ galaxy_http_api_healthcheck_url }}"
-          method: GET
-          status_code: 200
+        url: "{{ galaxy_http_api_healthcheck_url }}"
+        method: GET
+        status_code: 200
       register: galaxy_http_api_after_restart
       retries: 30
       delay: 10
@@ -712,10 +637,10 @@
 
     - name: Confirm Galaxy API responds over HTTPS after stabilisation wait
       ansible.builtin.uri:
-              url: "{{ galaxy_https_api_healthcheck_url }}"
-              method: GET
-              status_code: 200
-              validate_certs: "{{ galaxy_https_validate_certs }}"
+        url: "{{ galaxy_https_api_healthcheck_url }}"
+        method: GET
+        status_code: 200
+        validate_certs: "{{ galaxy_https_validate_certs }}"
       register: galaxy_https_api_after_restart
       retries: 30
       delay: 10
