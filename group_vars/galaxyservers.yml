@@ -157,11 +157,14 @@ galaxy_https_validate_certs: false
 # ---------------------------------------------------------------------
 # Galaxy branding configuration
 # ---------------------------------------------------------------------
-galaxy_brand: "UiO Galaxy"
-galaxy_page_title: "ImmuneML Galaxy"
+galaxy_brand: "ImmuneML"
 
 galaxy_brand_resolved: "{{ galaxy_brand | default('Galaxy') }}"
 galaxy_page_title_resolved: "{{ galaxy_page_title | default(galaxy_brand_resolved) }}"
 
-galaxy_favicon_ico_src: "{{ immuneml_welcome_folder_resolved }}/favicon.ico"
-galaxy_favicon_svg_src: "{{ immuneml_welcome_folder_resolved }}/favicon.svg"
+# Optional local favicon files on the Ansible controller.
+# Example:
+#   galaxy_favicon_ico_src: "files/favicon.ico"
+#   galaxy_favicon_svg_src: "files/favicon.svg"
+#galaxy_favicon_ico_src: "files/favicon.ico"
+#galaxy_favicon_svg_src: "files/favicon.svg"

@@ -305,39 +305,7 @@
         executable: /bin/bash
       changed_when: false
 
-    - name: Ensure immuneML wrappers declare compatible setuptools dependency
-      ansible.builtin.shell: |
-        set -euo pipefail
 
-        python3 - <<'PY'
-        from pathlib import Path
-        import re
-
-        macros = Path("{{ immuneml_prod_macros_path }}")
-        setuptools_version = "{{ immuneml_setuptools_version | default('80.9.0') }}"
-
-        if not macros.exists():
-            raise SystemExit(f"Missing prod_macros.xml: {macros}")
-
-        text = macros.read_text()
-
-        text = re.sub(
-            r'\s*<requirement[^>]*type="package"[^>]*>setuptools</requirement>\n?',
-            '\n',
-            text
-        )
-
-        insert_line = f'            <requirement type="package" version="{setuptools_version}">setuptools</requirement>\n'
-
-        if "</requirements>" not in text:
-            raise SystemExit("Could not find </requirements> in prod_macros.xml")
-
-        text = text.replace("</requirements>", insert_line + "        </requirements>", 1)
-        macros.write_text(text)
-        PY
-      args:
-        executable: /bin/bash
-      changed_when: false
 
     - name: Check whether immuneML YAML wrapper exists
       ansible.builtin.stat:
@@ -542,14 +510,13 @@
         group: "{{ galaxy_runtime_group_resolved }}"
         mode: "0755"
 
-    - name: Copy immuneML welcome assets into Galaxy static directory
+    - name: Copy local immuneML welcome/static assets into Galaxy static directory
       ansible.builtin.copy:
-        src: "{{ immuneml_welcome_source_dir_resolved }}/{{ immuneml_welcome_folder_resolved }}/"
-        dest: "{{ galaxy_static_dir_resolved }}/"
-        remote_src: true
-        owner: "{{ galaxy_runtime_user_resolved }}"
-        group: "{{ galaxy_runtime_group_resolved }}"
-        mode: preserve
+          src: "{{ immuneml_welcome_folder_resolved }}/"
+          dest: "{{ galaxy_static_dir_resolved }}/"
+          owner: "{{ galaxy_runtime_user_resolved }}"
+          group: "{{ galaxy_runtime_group_resolved }}"
+          mode: preserve
 
     - name: Check immuneML welcome page exists in Galaxy static directory
       ansible.builtin.stat:
