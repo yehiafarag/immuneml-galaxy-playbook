@@ -54,7 +54,7 @@ immuneml_cli_runtime_enabled: false
 # ---------------------------------------------------------------------
 # Standard immuneML Galaxy wrappers.
 immuneml_tools_repo_url: "https://github.com/uio-bmi/immuneml_tools.git"
-immuneml_tools_version: "main"
+immuneml_tools_version: "main"  #"main""update-immuneml-3-0-27"
 immuneml_tools_source_dir: "/srv/galaxy/immuneml_tools_source"
 immuneml_tools_force_refresh: true
 
@@ -123,14 +123,6 @@ immuneml_tools_force_refresh_resolved: "{{ immuneml_tools_force_refresh | defaul
 
 immuneml_tool_dir: "{{ galaxy_tool_dir_resolved }}/immuneml"
 immuneml_prod_macros_path: "{{ immuneml_tool_dir }}/prod_macros.xml"
-
-
-# ---------------------------------------------------------------------
-# immuneML Galaxy wrapper dependency compatibility
-# ---------------------------------------------------------------------
-# immuneML currently imports pkg_resources, which is provided by setuptools.
-# Pin setuptools to a compatible version for Galaxy Conda tool environments.
-immuneml_setuptools_version: "80.9.0"
 
 
 # ---------------------------------------------------------------------
