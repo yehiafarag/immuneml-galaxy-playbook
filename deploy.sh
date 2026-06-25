@@ -45,7 +45,6 @@ step()    { echo -e "${BLUE}[INFO]${NC} $1"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error()   { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 success() { echo -e "${GREEN}[OK]${NC} $1"; }
-fail()    { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 trim() {
   local value="$1"
   value="${value#"${value%%[![:space:]]*}"}"
