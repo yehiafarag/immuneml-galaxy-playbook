@@ -45,7 +45,12 @@ step()    { echo -e "${BLUE}[INFO]${NC} $1"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error()   { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 success() { echo -e "${GREEN}[OK]${NC} $1"; }
-fail()    { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+trim() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
 
 # ------------------------------------------------------------------------
 # Path Configurations
@@ -65,6 +70,10 @@ DEFAULT_REMOTE_ROOT="/srv/galaxy"
 GALAXY_HOST_IP=""
 GALAXY_SSH_USER=""
 GALAXY_ROOT=""
+GALAXY_DB_PASSWORD=""
+GALAXY_ADMIN_EMAIL=""
+GALAXY_SERVER_NAME=""
+GALAXY_ENABLE_HTTPS=""
 
 # ========================================================================
 # CONFIGURATION LOADER
@@ -82,12 +91,35 @@ load_config() {
     fi
   fi
 
-  GALAXY_HOST_IP=$(yq -r '.galaxy.host_ip' "$CONFIG_FILE")
-  GALAXY_SSH_USER=$(yq -r '.galaxy.ssh_user' "$CONFIG_FILE")
-  GALAXY_ROOT=$(yq -r '.galaxy_base_dir // .galaxy_root // "'"$DEFAULT_REMOTE_ROOT"'"' "$CONFIG_FILE")
+  GALAXY_HOST_IP=$(trim "$(yq -r '.galaxy.host_ip // ""' "$CONFIG_FILE")")
+  GALAXY_SSH_USER=$(trim "$(yq -r '.galaxy.ssh_user // ""' "$CONFIG_FILE")")
+  GALAXY_ROOT=$(trim "$(yq -r '.galaxy_base_dir // .galaxy_root // "'"$DEFAULT_REMOTE_ROOT"'"' "$CONFIG_FILE")")
+  GALAXY_DB_PASSWORD=$(trim "$(yq -r '.galaxy_database_password // ""' "$CONFIG_FILE")")
+  GALAXY_ADMIN_EMAIL=$(trim "$(yq -r '.galaxy_admin_email // ""' "$CONFIG_FILE")")
+  GALAXY_SERVER_NAME=$(trim "$(yq -r '.galaxy_server_name // ""' "$CONFIG_FILE")")
+  GALAXY_ENABLE_HTTPS=$(trim "$(yq -r '.galaxy_enable_https // false' "$CONFIG_FILE")")
 
   [[ -z "$GALAXY_HOST_IP" || "$GALAXY_HOST_IP" == "null" ]] && error "Missing 'galaxy.host_ip' entry in group_vars/galaxyservers.yml"
   [[ -z "$GALAXY_SSH_USER" || "$GALAXY_SSH_USER" == "null" ]] && error "Missing 'galaxy.ssh_user' entry in group_vars/galaxyservers.yml"
+  [[ -z "$GALAXY_DB_PASSWORD" || "$GALAXY_DB_PASSWORD" == "null" ]] && error "Missing 'galaxy_database_password' entry in group_vars/galaxyservers.yml"
+  [[ -z "$GALAXY_ADMIN_EMAIL" || "$GALAXY_ADMIN_EMAIL" == "null" ]] && error "Missing 'galaxy_admin_email' entry in group_vars/galaxyservers.yml"
+
+  # Stop example values from being used as real deployment settings.
+  [[ "$GALAXY_HOST_IP" == "use.real.host.ip" || "$GALAXY_HOST_IP" == "YOUR_SERVER_IP_OR_DOMAIN" ]] && \
+    error "Replace placeholder galaxy.host_ip with the target server IP address or DNS name."
+
+  [[ "$GALAXY_SSH_USER" == "SSH_USER" || "$GALAXY_SSH_USER" == "YOUR_SSH_USER" ]] && \
+    error "Replace placeholder galaxy.ssh_user with the real SSH username."
+
+  [[ "$GALAXY_DB_PASSWORD" == "CHANGE_ME_STRONG_PASSWORD" ]] && \
+    error "Replace placeholder galaxy_database_password before deploying."
+
+  [[ "$GALAXY_ADMIN_EMAIL" == "admin@example.com" ]] && \
+    error "Replace placeholder galaxy_admin_email with the real Galaxy admin email."
+
+  if [[ "$GALAXY_ENABLE_HTTPS" == "true" && "$GALAXY_SERVER_NAME" == "galaxy.local" ]]; then
+    warn "galaxy_server_name is still galaxy.local. This is only suitable for local testing or self-signed deployments."
+  fi
 
   success "Configuration validated and parsed successfully ✅"
 }
