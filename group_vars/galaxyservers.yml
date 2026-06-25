@@ -6,8 +6,8 @@
 # Target VM
 # ---------------------------------------------------------------------
 galaxy:
-  host_ip: "use.real.host.ip"
-  ssh_user: "SSH_USER "
+  host_ip: ""
+  ssh_user: ""
 
 # ---------------------------------------------------------------------
 # Galaxy repository override
@@ -19,14 +19,14 @@ galaxy_force_checkout: true
 # ---------------------------------------------------------------------
 # Galaxy admin
 # ---------------------------------------------------------------------
-galaxy_admin_email: "admin@example.com"
+galaxy_admin_email: ""
 
 # ---------------------------------------------------------------------
 # Galaxy database secret
 # ---------------------------------------------------------------------
 # The database user/name/host/port come from galaxy_deployment defaults.
 # Only the password should normally be environment-specific.
-galaxy_database_password: "CHANGE_ME_STRONG_PASSWORD"
+galaxy_database_password: ""
 
 # ---------------------------------------------------------------------
 # Galaxy Conda dependency resolver
